@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OEE Report Generator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+        
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .section {
+            margin-bottom: 40px;
+        }
+        
+        .section-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #555;
+        }
+        
+        select, input[type="number"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+        
+        select:focus, input[type="number"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        button {
+            padding: 14px 32px;
+            font-size: 1.1em;
+            font-weight: 600;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            width: 100%;
+        }
+        
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+            padding: 10px 20px;
+        }
+        
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+        
+        .progress-section {
+            display: none;
+            margin-top: 30px;
+        }
+        
+        .progress-section.visible {
+            display: block;
+        }
+        
+        .progress-label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 0.95em;
+            color: #666;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 24px;
+            background: #f0f0f0;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid #ddd;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 0%;
+            transition: width 0.5s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 0.85em;
+        }
+        
+        .status-message {
+            margin-top: 15px;
+            padding: 12px;
+            background: #f5f5f5;
+            border-left: 4px solid #667eea;
+            border-radius: 4px;
+            color: #333;
+        }
+        
+        .download-section {
+            display: none;
+            margin-top: 30px;
+            text-align: center;
+        }
+        
+        .download-section.visible {
+            display: block;
+            padding: 30px;
+            background: #f0f8ff;
+            border-radius: 8px;
+            border: 2px solid #667eea;
+        }
+        
+        .download-section h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+        }
+        
+        .btn-download {
+            background: #4CAF50;
+            color: white;
+            display: inline-block;
+            padding: 16px 40px;
+            margin: 10px 5px;
+        }
+        
+        .btn-download:hover {
+            background: #45a049;
+            transform: translateY(-2px);
+        }
+        
+        .error-message {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            background: #ffebee;
+            border-left: 4px solid #c62828;
+            border-radius: 4px;
+            color: #c62828;
+        }
+        
+        .error-message.visible {
+            display: block;
+        }
+        
+        .job-history {
+            margin-top: 40px;
+        }
+        
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        
+        .history-table thead {
+            background: #f5f5f5;
+            border-bottom: 2px solid #ddd;
+        }
+        
+        .history-table th {
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #555;
+        }
+        
+        .history-table td {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85em;
+        }
+        
+        .status-complete {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-running {
+            background: #cfe2ff;
+            color: #084298;
+        }
+        
+        .status-queued {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .status-failed {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #999;
+            font-size: 0.9em;
+            background: #fafafa;
+            border-top: 1px solid #eee;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏭 OEE Report Generator</h1>
+            <p>Automated Weekly Report Generation for Cement Plants</p>
+        </div>
+        
+        <div class="content">
+            <!-- FORM SECTION -->
+            <div class="section">
+                <div class="section-title">Generate New Report</div>
+                
+                <form id="reportForm">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="siteSelect">Select Site</label>
+                            <select id="siteSelect" required>
+                                <option value="">-- Choose a site --</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="weekInput">Week Number (1-53)</label>
+                            <input 
+                                type="number" 
+                                id="weekInput" 
+                                min="1" 
+                                max="53" 
+                                required
+                                placeholder="e.g., 36"
+                            >
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="btn-primary" id="submitBtn">
+                        Generate Report
+                    </button>
+                </form>
+            </div>
+            
+            <!-- PROGRESS SECTION -->
+            <div id="progressSection" class="progress-section">
+                <div class="section-title">
+                    <span class="spinner"></span> Report Generation in Progress
+                </div>
+                
+                <div class="progress-label">
+                    <span id="statusLabel">Processing...</span>
+                    <span id="progressPercent">0%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                
+                <div class="status-message" id="statusMessage">
+                    Initializing pipeline...
+                </div>
+            </div>
+            
+            <!-- DOWNLOAD SECTION -->
+            <div id="downloadSection" class="download-section">
+                <h3>✓ Report Generated Successfully!</h3>
+                <p id="downloadMessage">Your report is ready for download.</p>
+                <button class="btn-download" id="downloadBtn">
+                    📥 Download PDF Report
+                </button>
+            </div>
+            
+            <!-- ERROR SECTION -->
+            <div id="errorSection" class="error-message">
+                <strong>Error:</strong> <span id="errorText"></span>
+            </div>
+            
+            <!-- JOB HISTORY SECTION -->
+            <div class="section job-history">
+                <div class="section-title">Recent Jobs</div>
+                
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Site</th>
+                            <th>Week</th>
+                            <th>Status</th>
+                            <th>Progress</th>
+                            <th>Started</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobHistoryBody">
+                        <tr>
+                            <td colspan="5" style="text-align: center; color: #999;">No jobs yet</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>OEE Report Generation System • Real-time Progress Tracking</p>
+        </div>
+    </div>
+    
+    <script>
+        // ════════════════════════════════════════════════════════════════════════
+        // API CLIENT
+        // ════════════════════════════════════════════════════════════════════════
+        
+        const API_BASE = "";  // Use relative URLs (same server)
+        
+        const api = {
+            async getSites() {
+                const resp = await fetch(`${API_BASE}/api/sites`);
+                return resp.json();
+            },
+            
+            async submitReport(siteId, week) {
+                const resp = await fetch(`${API_BASE}/api/generate-report`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ site_id: siteId, week })
+                });
+                return resp.json();
+            },
+            
+            async getJobStatus(jobId) {
+                const resp = await fetch(`${API_BASE}/api/job-status/${jobId}`);
+                return resp.json();
+            },
+            
+            async listJobs(limit = 10) {
+                const resp = await fetch(`${API_BASE}/api/jobs?limit=${limit}`);
+                return resp.json();
+            },
+            
+            getDownloadUrl(siteId, week) {
+                return `${API_BASE}/api/download/${siteId}/${week}`;
+            }
+        };
+        
+        // ════════════════════════════════════════════════════════════════════════
+        // STATE MANAGEMENT
+        // ════════════════════════════════════════════════════════════════════════
+        
+        let currentJobId = null;
+        let currentSiteId = null;
+        let currentWeek = null;
+        let pollInterval = null;
+        
+        // ════════════════════════════════════════════════════════════════════════
+        // UI HELPERS
+        // ════════════════════════════════════════════════════════════════════════
+        
+        function show(elementId) {
+            const el = document.getElementById(elementId);
+            if (el) el.classList.add("visible");
+        }
+        
+        function hide(elementId) {
+            const el = document.getElementById(elementId);
+            if (el) el.classList.remove("visible");
+        }
+        
+        function setProgress(percent, message = null) {
+            const fill = document.getElementById("progressFill");
+            const label = document.getElementById("progressPercent");
+            
+            fill.style.width = percent + "%";
+            label.textContent = Math.min(percent, 100) + "%";
+            
+            if (message) {
+                document.getElementById("statusMessage").textContent = message;
+            }
+        }
+        
+        function showError(message) {
+            document.getElementById("errorText").textContent = message;
+            show("errorSection");
+        }
+        
+        function clearError() {
+            hide("errorSection");
+        }
+        
+        function setStatusBadgeClass(status) {
+            if (status === "complete") return "status-complete";
+            if (status === "running") return "status-running";
+            if (status === "queued") return "status-queued";
+            if (status === "failed") return "status-failed";
+            return "";
+        }
+        
+        // ════════════════════════════════════════════════════════════════════════
+        // INITIALIZE
+        // ════════════════════════════════════════════════════════════════════════
+        
+        async function initialize() {
+            try {
+                const sites = await api.getSites();
+                const select = document.getElementById("siteSelect");
+                
+                sites.forEach(site => {
+                    const option = document.createElement("option");
+                    option.value = site.site_id;
+                    option.textContent = `${site.name} (${site.location})`;
+                    select.appendChild(option);
+                });
+                
+                // Set week to current week
+                const now = new Date();
+                const start = new Date(now.getFullYear(), 0, 1);
+                const diff = now - start;
+                const oneWeek = 1000 * 60 * 60 * 24 * 7;
+                const currentWeek = Math.floor(diff / oneWeek);
+                document.getElementById("weekInput").value = Math.min(currentWeek, 53);
+                
+                // Load initial job history
+                await refreshJobHistory();
+            } catch (e) {
+                console.error("Initialization error:", e);
+                showError("Failed to load sites. Check server connection.");
+            }
+        }
+        
+        // ════════════════════════════════════════════════════════════════════════
+        // FORM SUBMISSION
+        // ════════════════════════════════════════════════════════════════════════
+        
+        document.getElementById("reportForm").addEventListener("submit", async (e) => {
+            e.preventDefault();
+            
+            const siteId = document.getElementById("siteSelect").value;
+            const week = parseInt(document.getElementById("weekInput").value);
+            
+            if (!siteId) {
+                showError("Please select a site");
+                return;
+            }
+            
+            if (!week || week < 1 || week > 53) {
+                showError("Please enter a valid week (1-53)");
+                return;
+            }
+            
+            // Clear previous state
+            clearError();
+            hide("downloadSection");
+            
+            // Show progress
+            show("progressSection");
+            setProgress(5, "Submitting job...");
+            
+            try {
+                // Submit report
+                const result = await api.submitReport(siteId, week);
+                
+                if (!result.job_id) {
+                    throw new Error(result.error || "Failed to submit job");
+                }
+                
+                // Store current job info
+                currentJobId = result.job_id;
+                currentSiteId = siteId;
+                currentWeek = week;
+                
+                // Disable form while processing
+                document.getElementById("submitBtn").disabled = true;
+                
+                // Start polling for status
+                await pollJobStatus();
+            } catch (e) {
+                console.error("Submission error:", e);
+                showError(e.message);
+                hide("progressSection");
+                document.getElementById("submitBtn").disabled = false;
+            }
+        });
+        
+        // ════════════════════════════════════════════════════════════════════════
+        // POLL JOB STATUS
+        // ════════════════════════════════════════════════════════════════════════
+        
+        async function pollJobStatus() {
+            if (!currentJobId) return;
+            
+            try {
+                const status = await api.getJobStatus(currentJobId);
+                
+                setProgress(status.progress || 0, status.message);
+                
+                if (status.status === "complete") {
+                    // Job complete
+                    setProgress(100, "Report generation complete!");
+                    show("downloadSection");
+                    
+                    // Show download button
+                    document.getElementById("downloadBtn").onclick = () => {
+                        window.open(api.getDownloadUrl(currentSiteId, currentWeek));
+                    };
+                    
+                    document.getElementById("submitBtn").disabled = false;
+                    
+                    // Stop polling
+                    clearInterval(pollInterval);
+                    
+                    // Refresh job history
+                    await refreshJobHistory();
+                    
+                } else if (status.status === "failed") {
+                    // Job failed
+                    hide("progressSection");
+                    showError(`Report generation failed: ${status.error || "Unknown error"}`);
+                    document.getElementById("submitBtn").disabled = false;
+                    clearInterval(pollInterval);
+                    await refreshJobHistory();
+                    
+                } else {
+                    // Still processing, poll again
+                    pollInterval = setTimeout(pollJobStatus, 1000);
+                }
+            } catch (e) {
+                console.error("Poll error:", e);
+                hide("progressSection");
+                showError("Connection lost. Check server status.");
+                document.getElementById("submitBtn").disabled = false;
+            }
+        }
+        
+        // ════════════════════════════════════════════════════════════════════════
+        // JOB HISTORY
+        // ════════════════════════════════════════════════════════════════════════
+        
+        async function refreshJobHistory() {
+            try {
+                const result = await api.listJobs(15);
+                const tbody = document.getElementById("jobHistoryBody");
+                
+                if (!result.jobs || result.jobs.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: #999;">No jobs yet</td></tr>`;
+                    return;
+                }
+                
+                // Reverse to show newest first
+                const jobs = result.jobs.reverse();
+                
+                tbody.innerHTML = jobs.map(job => {
+                    const startTime = job.started_at ? new Date(job.started_at).toLocaleString() : "-";
+                    const statusClass = setStatusBadgeClass(job.status);
+                    
+                    return `
+                        <tr>
+                            <td>${job.site_id}</td>
+                            <td>${job.week}</td>
+                            <td><span class="status-badge ${statusClass}">${job.status}</span></td>
+                            <td>${job.progress}%</td>
+                            <td>${startTime}</td>
+                        </tr>
+                    `;
+                }).join("");
+            } catch (e) {
+                console.error("History error:", e);
+            }
+        }
+        
+        // ════════════════════════════════════════════════════════════════════════
+        // STARTUP
+        // ════════════════════════════════════════════════════════════════════════
+        
+        document.addEventListener("DOMContentLoaded", initialize);
+        
+        // Refresh job history every 5 seconds
+        setInterval(refreshJobHistory, 5000);
+    </script>
+</body>
+</html>
