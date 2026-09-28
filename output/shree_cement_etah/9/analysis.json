@@ -1,0 +1,155 @@
+{
+    "source": {
+        "file": "Elasticsearch aggregations",
+        "mode": "ES_QUERY",
+        "calculation_performed": true,
+        "source_of_truth": "Elasticsearch IoT data"
+    },
+    "machine": "Shree Packer 1, Shree Packer 2, Shree Packer 3, Shree Packer 4",
+    "verified_kpis": {
+        "oee": 0.0,
+        "availability": 0,
+        "performance": 0,
+        "quality": 0
+    },
+    "week": 9,
+    "previous_week": 8,
+    "report_period": {
+        "start": "2026-02-23 06:00:00 IST",
+        "end": "2026-03-02 06:00:00 IST",
+        "start_raw": "2026-02-23 06:00:00 IST",
+        "end_raw": "2026-03-02 06:00:00 IST"
+    },
+    "previous_report_period": {
+        "start": "",
+        "end": ""
+    },
+    "previous_kpi": {},
+    "previous_kpi_available": false,
+    "kpi": {
+        "oee": {
+            "raw_value": 0.0,
+            "display_value": "0.00%",
+            "json_value": "0.00%"
+        },
+        "availability": {
+            "raw_value": 0,
+            "display_value": "0.00%",
+            "json_value": "0.00%"
+        },
+        "performance": {
+            "raw_value": 0,
+            "display_value": "0.00%",
+            "json_value": "0.00%"
+        },
+        "quality": {
+            "raw_value": 0,
+            "display_value": "0.00%",
+            "json_value": "0.00%"
+        }
+    },
+    "kpi_percent": {
+        "oee": 0.0,
+        "availability": 0,
+        "performance": 0,
+        "quality": 0
+    },
+    "availability_details": {
+        "planned_production_time_min": 0.0,
+        "total_available_time_min": 0.0
+    },
+    "downtime_breakdown_by_plc": {
+        "PLC_01": {
+            "machine": "Shree Packer 1",
+            "belt_not_running_min": 0.0,
+            "main_drive_stop_min": 0.0,
+            "spout_fault_min": 0.0
+        },
+        "PLC_02": {
+            "machine": "Shree Packer 2",
+            "belt_not_running_min": 0.0,
+            "main_drive_stop_min": 0.0,
+            "spout_fault_min": 0.0
+        },
+        "PLC_03": {
+            "machine": "Shree Packer 3",
+            "belt_not_running_min": 0.0,
+            "main_drive_stop_min": 0.0,
+            "spout_fault_min": 0.0
+        },
+        "PLC_04": {
+            "machine": "Shree Packer 4",
+            "belt_not_running_min": 0.0,
+            "main_drive_stop_min": 0.0,
+            "spout_fault_min": 0.0
+        }
+    },
+    "shift_changeover": {
+        "A": {
+            "raw_value": 0.0,
+            "display_value": "0.00 min",
+            "json_value": 0.0
+        },
+        "B": {
+            "raw_value": 0.0,
+            "display_value": "0.00 min",
+            "json_value": 0.0
+        },
+        "C": {
+            "raw_value": 0.0,
+            "display_value": "0.00 min",
+            "json_value": 0.0
+        }
+    },
+    "spout_downtime": {
+        "PLC_01": {},
+        "PLC_02": {},
+        "PLC_03": {},
+        "PLC_04": {}
+    },
+    "quality_details": {
+        "good_bags": {
+            "raw_value": 0,
+            "display_value": "0",
+            "json_value": 0
+        },
+        "burst_bags": {
+            "raw_value": 0,
+            "display_value": "0",
+            "json_value": 0
+        },
+        "out_of_limit_bags": {
+            "raw_value": 0,
+            "display_value": "0",
+            "json_value": 0
+        },
+        "total_bags": {
+            "raw_value": 0,
+            "display_value": "0",
+            "json_value": 0
+        }
+    },
+    "performance_details": {
+        "actual_good_bags": {
+            "raw_value": 0,
+            "display_value": "0.00",
+            "json_value": 0
+        },
+        "expected_good_bags": {
+            "raw_value": 0,
+            "display_value": "0.00",
+            "json_value": 0
+        }
+    },
+    "raw_aggregation_data": {
+        "good_bags": 0,
+        "burst_bags": 0,
+        "out_of_limit": 0,
+        "total_bags": 0,
+        "fault_duration": 0.0,
+        "fault_scaled": 0.0,
+        "ideal_fault": 0.0,
+        "total_duration": 0.0,
+        "running_seconds": 0.0
+    }
+}

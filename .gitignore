@@ -36,12 +36,8 @@ config.json
 # GENERATED OEE REPORT OUTPUT
 # ============================================================
 
-output/
 
-# Generated reports / analysis
-*.pdf
-*.docx
-*.xlsx
+
 
 # Generated charts
 charts/

@@ -1,0 +1,66 @@
+{
+    "ai_engine": "LM Studio (gemma-2-2b-it)",
+    "mode": "LOCAL",
+    "cloud": null,
+    "api": "http://127.0.0.1:1234/v1/chat/completions",
+    "model": "gemma-2-2b-it",
+    "machine": "Shree Packer 1, Shree Packer 2, Shree Packer 3, Shree Packer 4",
+    "current_week": 9,
+    "previous_week": 8,
+    "verified_kpis": {
+        "oee": 0.0,
+        "availability": 0.0,
+        "performance": 0.0,
+        "quality": 0.0
+    },
+    "verified_status": {
+        "oee_status": "BELOW TARGET",
+        "weakest_kpi": "OEE",
+        "strongest_kpi": "OEE"
+    },
+    "verified_downtime": {
+        "planned_production_time_min": 0.0,
+        "total_available_time_min": 0.0,
+        "total_availability_loss_min": 0.0,
+        "classified_downtime_min": null,
+        "main_downtime_loss": "N/A",
+        "spout_downtime_contributors": []
+    },
+    "verified_quality": {
+        "good_bags": 0.0,
+        "quality_loss_bags": null,
+        "total_produced_bags": 0.0,
+        "quality_loss_percent": null,
+        "main_quality_loss": "N/A"
+    },
+    "ai_insights": {
+        "executive_summary": "OEE is 0.00%, below target of 85%. Availability is the weakest KPI at 0.00%, while Quality is the strongest KPI at 0.00%.",
+        "week_over_week_trend": "Availability decreased by 100.00 percentage points. Performance remained unchanged. Quality increased by 100.00 percentage points.",
+        "main_downtime_issue": "N/A — data not supplied min",
+        "main_quality_issue": "N/A — data not supplied bags lost",
+        "key_decision_point": "The weakest KPI is OEE, which needs to be addressed first.  Focus on reducing downtime and improving quality.\nMISSING DATA:\nDowntime by fault code, total downtime, planned production time, good bags, expected good bags, quality loss bags, quality loss percent, and the main downtime issue are not supplied."
+    },
+    "executive_summary": "OEE is 0.00%, below target of 85%. Availability is the weakest KPI at 0.00%, while Quality is the strongest KPI at 0.00%.",
+    "week_over_week_trend": "Availability decreased by 100.00 percentage points. Performance remained unchanged. Quality increased by 100.00 percentage points.",
+    "main_downtime_issue": "N/A — data not supplied min",
+    "main_quality_issue": "N/A — data not supplied bags lost",
+    "key_decision_point": "The weakest KPI is OEE, which needs to be addressed first.  Focus on reducing downtime and improving quality.\nMISSING DATA:\nDowntime by fault code, total downtime, planned production time, good bags, expected good bags, quality loss bags, quality loss percent, and the main downtime issue are not supplied.",
+    "oee_analysis": "OEE is 0.00%.",
+    "availability_analysis": "Availability is 0.00%.",
+    "performance_analysis": "Performance is 0.00%.",
+    "quality_analysis": "Quality is 0.00%.",
+    "downtime_analysis": "No classified downtime was recorded.",
+    "spout_analysis": "No spout downtime data was supplied.",
+    "quality_loss_analysis": "No quality-loss data was supplied.",
+    "oee_wow_analysis": "OEE week-over-week comparison data is unavailable.",
+    "availability_wow_analysis": "Availability week-over-week comparison data is unavailable.",
+    "performance_wow_analysis": "Performance week-over-week comparison data is unavailable.",
+    "quality_wow_analysis": "Quality week-over-week comparison data is unavailable.",
+    "key_findings": [
+        "OEE: 0.00% (BELOW TARGET)."
+    ],
+    "recommended_actions": [
+        "Focus improvement effort on OEE."
+    ],
+    "raw_model_response": "EXECUTIVE SUMMARY:\nOEE is 0.00%, below target of 85%. Availability is the weakest KPI at 0.00%, while Quality is the strongest KPI at 0.00%.\nWEEK-OVER-WEEK TREND:\nAvailability decreased by 100.00 percentage points. Performance remained unchanged. Quality increased by 100.00 percentage points.\nMAIN DOWNTIME ISSUE: N/A — data not supplied min\nMAIN QUALITY ISSUE: N/A — data not supplied bags lost\nKEY DECISION POINT:\nThe weakest KPI is OEE, which needs to be addressed first.  Focus on reducing downtime and improving quality.\nMISSING DATA:\nDowntime by fault code, total downtime, planned production time, good bags, expected good bags, quality loss bags, quality loss percent, and the main downtime issue are not supplied."
+}

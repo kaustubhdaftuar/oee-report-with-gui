@@ -1,0 +1,174 @@
+{
+    "source": {
+        "file": "Elasticsearch aggregations",
+        "mode": "ES_QUERY",
+        "calculation_performed": true,
+        "source_of_truth": "Elasticsearch IoT data"
+    },
+    "machine": "Fillpac 1, Fillpac 2, Fillpac 3, Fillpac 4",
+    "verified_kpis": {
+        "oee": 53.57,
+        "availability": 97.77,
+        "performance": 54.87,
+        "quality": 99.85
+    },
+    "week": 10,
+    "previous_week": 9,
+    "report_period": {
+        "start": "2026-03-02 06:00:00 IST",
+        "end": "2026-03-09 06:00:00 IST",
+        "start_raw": "2026-03-02 06:00:00 IST",
+        "end_raw": "2026-03-09 06:00:00 IST"
+    },
+    "previous_report_period": {
+        "start": "",
+        "end": ""
+    },
+    "previous_kpi": {
+        "oee": 0.0,
+        "availability": 0,
+        "performance": 0,
+        "quality": 0
+    },
+    "previous_kpi_available": true,
+    "kpi": {
+        "oee": {
+            "raw_value": 53.57,
+            "display_value": "53.57%",
+            "json_value": "53.57%"
+        },
+        "availability": {
+            "raw_value": 97.77,
+            "display_value": "97.77%",
+            "json_value": "97.77%"
+        },
+        "performance": {
+            "raw_value": 54.87,
+            "display_value": "54.87%",
+            "json_value": "54.87%"
+        },
+        "quality": {
+            "raw_value": 99.85,
+            "display_value": "99.85%",
+            "json_value": "99.85%"
+        }
+    },
+    "kpi_percent": {
+        "oee": 53.57,
+        "availability": 97.77,
+        "performance": 54.87,
+        "quality": 99.85
+    },
+    "availability_details": {
+        "planned_production_time_min": 273.5275836308798,
+        "total_available_time_min": 1091.9376006245614
+    },
+    "downtime_breakdown_by_plc": {
+        "PLC_01": {
+            "machine": "Fillpac 1",
+            "belt_not_running_min": 102.2059839963913,
+            "main_drive_stop_min": 7.01355011065801,
+            "spout_fault_min": 0.0
+        },
+        "PLC_02": {
+            "machine": "Fillpac 2",
+            "belt_not_running_min": 147.98064959049225,
+            "main_drive_stop_min": 7.592216674486796,
+            "spout_fault_min": 0.0
+        },
+        "PLC_03": {
+            "machine": "Fillpac 3",
+            "belt_not_running_min": 11.46791658004125,
+            "main_drive_stop_min": 0.6299666643142701,
+            "spout_fault_min": 0.0
+        },
+        "PLC_04": {
+            "machine": "Fillpac 4",
+            "belt_not_running_min": 178.8111667672793,
+            "main_drive_stop_min": 15.971483333905537,
+            "spout_fault_min": 0.0
+        }
+    },
+    "shift_changeover": {
+        "A": {
+            "raw_value": 0.0,
+            "display_value": "0.00 min",
+            "json_value": 0.0
+        },
+        "B": {
+            "raw_value": 0.0,
+            "display_value": "0.00 min",
+            "json_value": 0.0
+        },
+        "C": {
+            "raw_value": 207.03,
+            "display_value": "207.03 min",
+            "json_value": 207.03
+        }
+    },
+    "spout_downtime": {
+        "PLC_01": {
+            "4": 0.03,
+            "7": 0.11
+        },
+        "PLC_02": {
+            "2": 0.04,
+            "16": 0.01
+        },
+        "PLC_03": {
+            "2": 0.26,
+            "3": 0.25,
+            "4": 0.12,
+            "7": 0.0,
+            "11": 0.06,
+            "14": 0.0,
+            "16": 0.05
+        },
+        "PLC_04": {}
+    },
+    "quality_details": {
+        "good_bags": {
+            "raw_value": 35913,
+            "display_value": "35913",
+            "json_value": 35913
+        },
+        "burst_bags": {
+            "raw_value": 53,
+            "display_value": "53",
+            "json_value": 53
+        },
+        "out_of_limit_bags": {
+            "raw_value": 0,
+            "display_value": "0",
+            "json_value": 0
+        },
+        "total_bags": {
+            "raw_value": 35966,
+            "display_value": "35966",
+            "json_value": 35966
+        }
+    },
+    "performance_details": {
+        "actual_good_bags": {
+            "raw_value": 35913,
+            "display_value": "35913.00",
+            "json_value": 35913
+        },
+        "expected_good_bags": {
+            "raw_value": 65449.62,
+            "display_value": "65449.62",
+            "json_value": 65449.62
+        }
+    },
+    "raw_aggregation_data": {
+        "good_bags": 35913,
+        "burst_bags": 53,
+        "out_of_limit": 0,
+        "total_bags": 35966,
+        "fault_duration": 49104.6,
+        "fault_scaled": 278.17,
+        "ideal_fault": 14970.97,
+        "total_duration": 65516.26,
+        "running_seconds": 785395.45
+    }
+}

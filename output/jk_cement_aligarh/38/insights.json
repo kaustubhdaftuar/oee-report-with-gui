@@ -1,0 +1,97 @@
+{
+    "site_id": "jk_cement_aligarh",
+    "report_week": 38,
+    "machine": "Fillpac 1, Fillpac 2",
+    "ai_insights": {
+        "executive_summary": "The current OEE is 98.29%, which is on target at 85.00%.  Availability is 98.33% and Performance is 100.00%. Quality is 99.96%. The weakest KPI is Availability at 98.33%. The strongest KPI is Performance at 100.00%.",
+        "main_loss_driver": "The largest downtime contributor is Fillpac 2 Main Drive Stop with 2792.10 minutes of classified downtime. This represents 44.27% of the total classified downtime.",
+        "performance_concern": "Performance is currently at 100.00%, which is a significant increase from the previous week's performance of 39.14%. The production gap is 0.",
+        "strongest_kpi": "Performance is the strongest KPI at 100.00%",
+        "week_over_week_trend": "Availability decreased by 0.55 percentage points, Performance increased by 60.86 percentage points and Quality increased by 0.89 percentage points from the previous week.  OEE changed by 59.95 percentage points.",
+        "quality_summary": "The current quality loss is 0.04%. The largest contributor to this loss is Out of Limit Bags with 2,974 bags (67.85% of recorded quality loss).",
+        "main_quality_issue": "Out of Limit Bags account for 2,974 bags of recorded quality loss. This represents 67.85% of the total recorded quality loss.",
+        "key_decision_point": "The weakest KPI is Availability at 98.33%.  Investigate Fillpac 2 Main Drive Stop and its impact on downtime.",
+        "missing_data": "No material data gaps identified."
+    },
+    "executive_summary": "The current OEE is 98.29%, which is on target at 85.00%.  Availability is 98.33% and Performance is 100.00%. Quality is 99.96%. The weakest KPI is Availability at 98.33%. The strongest KPI is Performance at 100.00%.",
+    "main_loss_driver": "The largest downtime contributor is Fillpac 2 Main Drive Stop with 2792.10 minutes of classified downtime. This represents 44.27% of the total classified downtime.",
+    "performance_concern": "Performance is currently at 100.00%, which is a significant increase from the previous week's performance of 39.14%. The production gap is 0.",
+    "strongest_kpi": "Performance is the strongest KPI at 100.00%",
+    "week_over_week_trend": "Availability decreased by 0.55 percentage points, Performance increased by 60.86 percentage points and Quality increased by 0.89 percentage points from the previous week.  OEE changed by 59.95 percentage points.",
+    "quality_summary": "The current quality loss is 0.04%. The largest contributor to this loss is Out of Limit Bags with 2,974 bags (67.85% of recorded quality loss).",
+    "main_quality_issue": "Out of Limit Bags account for 2,974 bags of recorded quality loss. This represents 67.85% of the total recorded quality loss.",
+    "key_decision_point": "The weakest KPI is Availability at 98.33%.  Investigate Fillpac 2 Main Drive Stop and its impact on downtime.",
+    "missing_data": "No material data gaps identified.",
+    "verified_kpis": {
+        "availability": 98.33,
+        "performance": 100.0,
+        "quality": 99.96,
+        "oee": 98.29
+    },
+    "verified_status": {
+        "availability": "good",
+        "performance": "good",
+        "quality": "good",
+        "oee": "On Target"
+    },
+    "verified_performance": {
+        "actual_good_bags": 11575417,
+        "expected_good_bags": 1363841,
+        "production_gap": 0
+    },
+    "verified_quality": {
+        "good_bags": 11575417,
+        "burst_bags": 1409,
+        "out_of_limit": 2974,
+        "total_bad_bags": 4383,
+        "total_produced_bags": 11579800,
+        "quality_loss_percentage": 0.037850394652757385,
+        "contributors": [
+            {
+                "reason": "Out of Limit Bags",
+                "bags": 2974
+            },
+            {
+                "reason": "Burst Bags",
+                "bags": 1409
+            }
+        ]
+    },
+    "verified_downtime": {
+        "fault_duration": 1038723.03,
+        "fault_scaled": 253480.32,
+        "ideal_fault": 136.56,
+        "planned_production_time": 27.758334112168086,
+        "total_available_time": 17339.80883574883,
+        "total_availability_loss": 0.0,
+        "total_classified_downtime": 6306.86646882693,
+        "contributors": [
+            {
+                "reason": "Fillpac 2 Main Drive Stop",
+                "minutes": 2792.0985217054686
+            },
+            {
+                "reason": "Fillpac 2 Belt Not Running",
+                "minutes": 1800.6548311511676
+            },
+            {
+                "reason": "Fillpac 1 Main Drive Stop",
+                "minutes": 1714.1131159702936
+            }
+        ]
+    },
+    "verified_shift_changeover": {
+        "shift_a_minutes": 0.0,
+        "shift_b_minutes": 0.0,
+        "shift_c_minutes": 0.0,
+        "total_minutes": 0.0
+    },
+    "previous_week": {
+        "availability": 98.88,
+        "performance": 39.14,
+        "quality": 99.07,
+        "oee": 38.34
+    },
+    "target_oee": 85.0,
+    "raw_model_response": "EXECUTIVE SUMMARY:\n\nThe current OEE is 98.29%, which is on target at 85.00%.  Availability is 98.33% and Performance is 100.00%. Quality is 99.96%. The weakest KPI is Availability at 98.33%. The strongest KPI is Performance at 100.00%.\n\nMAIN LOSS DRIVER:\nThe largest downtime contributor is Fillpac 2 Main Drive Stop with 2792.10 minutes of classified downtime. This represents 44.27% of the total classified downtime.\n\nPERFORMANCE CONCERN:\nPerformance is currently at 100.00%, which is a significant increase from the previous week's performance of 39.14%. The production gap is 0.\n\nSTRONGEST KPI:\nQuality is the strongest KPI at 99.96%.\n\nWEEK-OVER-WEEK TREND:\nAvailability decreased by 0.55 percentage points, Performance increased by 60.86 percentage points and Quality increased by 0.89 percentage points from the previous week.  OEE changed by 59.95 percentage points.\n\nQUALITY SUMMARY:\nThe current quality loss is 0.04%. The largest contributor to this loss is Out of Limit Bags with 2,974 bags (67.85% of recorded quality loss).\n\nMAIN QUALITY ISSUE:\nOut of Limit Bags account for 2,974 bags of recorded quality loss. This represents 67.85% of the total recorded quality loss.\n\nKEY DECISION POINT:\nThe weakest KPI is Availability at 98.33%.  Investigate Fillpac 2 Main Drive Stop and its impact on downtime.\n\n\nMISSING DATA:\nNo material data gaps identified."
+}

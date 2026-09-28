@@ -1,0 +1,109 @@
+{
+    "site_id": "shree_cement_etah",
+    "report_week": 23,
+    "machine": "Fillpac 1, Fillpac 2, Fillpac 3, Fillpac 4",
+    "ai_insights": {
+        "executive_summary": "The current OEE is 29.99%, below the target of 85.00%.  Performance is the weakest KPI at 30.12% and Availability is the strongest KPI at 100.00%.",
+        "main_loss_driver": "Fillpac 4 Main Drive Stop accounts for 27.38% of classified downtime.",
+        "performance_concern": "The actual good bags produced are 1,175,543 while the expected good bags were 3,902,793. This results in a production gap of 2,727,250 bags.",
+        "strongest_kpi": "Availability is the strongest KPI at 100.00%.",
+        "week_over_week_trend": "No prior week's verified data exists for comparison.",
+        "quality_summary": "The quality loss is 0.44% with Burst Bags being the largest contributor, accounting for 5,206 bags of recorded quality loss.",
+        "main_quality_issue": "Burst Bags account for 5,206 bags of recorded quality loss.",
+        "key_decision_point": "Prioritize investigation of the largest downtime driver, Fillpac 4 Main Drive Stop.",
+        "missing_data": "No material data gaps identified."
+    },
+    "executive_summary": "The current OEE is 29.99%, below the target of 85.00%.  Performance is the weakest KPI at 30.12% and Availability is the strongest KPI at 100.00%.",
+    "main_loss_driver": "Fillpac 4 Main Drive Stop accounts for 27.38% of classified downtime.",
+    "performance_concern": "The actual good bags produced are 1,175,543 while the expected good bags were 3,902,793. This results in a production gap of 2,727,250 bags.",
+    "strongest_kpi": "Availability is the strongest KPI at 100.00%.",
+    "week_over_week_trend": "No prior week's verified data exists for comparison.",
+    "quality_summary": "The quality loss is 0.44% with Burst Bags being the largest contributor, accounting for 5,206 bags of recorded quality loss.",
+    "main_quality_issue": "Burst Bags account for 5,206 bags of recorded quality loss.",
+    "key_decision_point": "Prioritize investigation of the largest downtime driver, Fillpac 4 Main Drive Stop.",
+    "missing_data": "No material data gaps identified.",
+    "verified_kpis": {
+        "availability": 100.0,
+        "performance": 30.12,
+        "quality": 99.56,
+        "oee": 29.99
+    },
+    "verified_status": {
+        "availability": "good",
+        "performance": "critical",
+        "quality": "good",
+        "oee": "Below Target"
+    },
+    "verified_performance": {
+        "actual_good_bags": 1175543,
+        "expected_good_bags": 3902793,
+        "production_gap": 2727250
+    },
+    "verified_quality": {
+        "good_bags": 1175543,
+        "burst_bags": 5206,
+        "out_of_limit": 0,
+        "total_bad_bags": 5206,
+        "total_produced_bags": 1180749,
+        "quality_loss_percentage": 0.44090657709640235,
+        "contributors": [
+            {
+                "reason": "Burst Bags",
+                "bags": 5206
+            }
+        ]
+    },
+    "verified_downtime": {
+        "fault_duration": 2927916.52,
+        "fault_scaled": 13147.95,
+        "ideal_fault": -329323.85,
+        "planned_production_time": -8963.734669923782,
+        "total_available_time": 39834.87399418752,
+        "total_availability_loss": 0.0,
+        "total_classified_downtime": 39033.22047335704,
+        "contributors": [
+            {
+                "reason": "Fillpac 1 Main Drive Stop",
+                "minutes": 10686.779010403156
+            },
+            {
+                "reason": "Fillpac 4 Main Drive Stop",
+                "minutes": 8541.756716310978
+            },
+            {
+                "reason": "Fillpac 4 Belt Not Running",
+                "minutes": 5897.209824685256
+            },
+            {
+                "reason": "Fillpac 3 Belt Not Running",
+                "minutes": 4829.453225998083
+            },
+            {
+                "reason": "Fillpac 2 Main Drive Stop",
+                "minutes": 4818.193469011783
+            },
+            {
+                "reason": "Fillpac 3 Main Drive Stop",
+                "minutes": 2662.0323705593746
+            },
+            {
+                "reason": "Fillpac 2 Belt Not Running",
+                "minutes": 1597.79585638841
+            }
+        ]
+    },
+    "verified_shift_changeover": {
+        "shift_a_minutes": 0.0,
+        "shift_b_minutes": 0.0,
+        "shift_c_minutes": 0.0,
+        "total_minutes": 0.0
+    },
+    "previous_week": {
+        "availability": null,
+        "performance": null,
+        "quality": null,
+        "oee": null
+    },
+    "target_oee": 85.0,
+    "raw_model_response": "EXECUTIVE SUMMARY:\n\nThe current OEE is 29.99%, below the target of 85.00%.  Performance is the weakest KPI at 30.12% and Availability is the strongest KPI at 100.00%.\n\nMAIN LOSS DRIVER: Fillpac 4 Main Drive Stop accounts for 27.38% of classified downtime.\n\nPERFORMANCE CONCERN: The actual good bags produced are 1,175,543 while the expected good bags were 3,902,793. This results in a production gap of 2,727,250 bags.\n\nSTRONGEST KPI: Availability is the strongest KPI at 100.00%.\n\nWEEK-OVER-WEEK TREND: No prior week's verified data exists for comparison.\n\nQUALITY SUMMARY: The quality loss is 0.44% with Burst Bags being the largest contributor, accounting for 5,206 bags of recorded quality loss.\n\nMAIN QUALITY ISSUE: Burst Bags account for 5,206 bags of recorded quality loss.\n\nKEY DECISION POINT:  Prioritize investigation of the largest downtime driver, Fillpac 4 Main Drive Stop.\n\n\nMISSING DATA: No material data gaps identified."
+}

@@ -1,0 +1,113 @@
+{
+    "site_id": "shree_cement_etah",
+    "report_week": 10,
+    "machine": "Fillpac 1, Fillpac 2, Fillpac 3, Fillpac 4",
+    "ai_insights": {
+        "executive_summary": "The current OEE is 53.57%, below the target of 85.00%. Performance is the weakest KPI at 54.87%, while Quality is the strongest at 99.85%.",
+        "main_loss_driver": "Fillpac 4 Belt Not Running accounts for 178.81 minutes of classified downtime, representing 37.91% of total classified downtime.",
+        "performance_concern": "The actual good bags produced are 35,913 while the expected good bags were 65,450. This represents a production gap of 29,537 bags.",
+        "strongest_kpi": "Quality is the strongest KPI at 99.85%.",
+        "week_over_week_trend": "Availability increased by 97.77 percentage points from the previous week, Performance increased by 54.87 percentage points from the previous week, and Quality increased by 99.85 percentage points from the previous week.",
+        "quality_summary": "The total bad bags are 53 bags, representing a quality loss of 0.15%. The largest contributor to this loss is Burst Bags at 53 bags (100.00% of recorded quality loss).",
+        "main_quality_issue": "Burst Bags account for 53 bags of recorded quality loss.",
+        "key_decision_point": "Prioritize investigation of the largest supplied downtime driver, Fillpac 4 Belt Not Running.",
+        "missing_data": "No material data gaps identified."
+    },
+    "executive_summary": "The current OEE is 53.57%, below the target of 85.00%. Performance is the weakest KPI at 54.87%, while Quality is the strongest at 99.85%.",
+    "main_loss_driver": "Fillpac 4 Belt Not Running accounts for 178.81 minutes of classified downtime, representing 37.91% of total classified downtime.",
+    "performance_concern": "The actual good bags produced are 35,913 while the expected good bags were 65,450. This represents a production gap of 29,537 bags.",
+    "strongest_kpi": "Quality is the strongest KPI at 99.85%.",
+    "week_over_week_trend": "Availability increased by 97.77 percentage points from the previous week, Performance increased by 54.87 percentage points from the previous week, and Quality increased by 99.85 percentage points from the previous week.",
+    "quality_summary": "The total bad bags are 53 bags, representing a quality loss of 0.15%. The largest contributor to this loss is Burst Bags at 53 bags (100.00% of recorded quality loss).",
+    "main_quality_issue": "Burst Bags account for 53 bags of recorded quality loss.",
+    "key_decision_point": "Prioritize investigation of the largest supplied downtime driver, Fillpac 4 Belt Not Running.",
+    "missing_data": "No material data gaps identified.",
+    "verified_kpis": {
+        "availability": 97.77,
+        "performance": 54.87,
+        "quality": 99.85,
+        "oee": 53.57
+    },
+    "verified_status": {
+        "availability": "good",
+        "performance": "critical",
+        "quality": "good",
+        "oee": "Below Target"
+    },
+    "verified_performance": {
+        "actual_good_bags": 35913,
+        "expected_good_bags": 65450,
+        "production_gap": 29537
+    },
+    "verified_quality": {
+        "good_bags": 35913,
+        "burst_bags": 53,
+        "out_of_limit": 0,
+        "total_bad_bags": 53,
+        "total_produced_bags": 35966,
+        "quality_loss_percentage": 0.14736139687482622,
+        "contributors": [
+            {
+                "reason": "Burst Bags",
+                "bags": 53
+            }
+        ]
+    },
+    "verified_downtime": {
+        "fault_duration": 49104.6,
+        "fault_scaled": 278.17,
+        "ideal_fault": 14970.97,
+        "planned_production_time": 273.5275836308798,
+        "total_available_time": 1091.9376006245614,
+        "total_availability_loss": 0.0,
+        "total_classified_downtime": 471.6729337175687,
+        "contributors": [
+            {
+                "reason": "Fillpac 4 Belt Not Running",
+                "minutes": 178.8111667672793
+            },
+            {
+                "reason": "Fillpac 2 Belt Not Running",
+                "minutes": 147.98064959049225
+            },
+            {
+                "reason": "Fillpac 1 Belt Not Running",
+                "minutes": 102.2059839963913
+            },
+            {
+                "reason": "Fillpac 4 Main Drive Stop",
+                "minutes": 15.971483333905537
+            },
+            {
+                "reason": "Fillpac 3 Belt Not Running",
+                "minutes": 11.46791658004125
+            },
+            {
+                "reason": "Fillpac 2 Main Drive Stop",
+                "minutes": 7.592216674486796
+            },
+            {
+                "reason": "Fillpac 1 Main Drive Stop",
+                "minutes": 7.01355011065801
+            },
+            {
+                "reason": "Fillpac 3 Main Drive Stop",
+                "minutes": 0.6299666643142701
+            }
+        ]
+    },
+    "verified_shift_changeover": {
+        "shift_a_minutes": 0.0,
+        "shift_b_minutes": 0.0,
+        "shift_c_minutes": 0.0,
+        "total_minutes": 0.0
+    },
+    "previous_week": {
+        "availability": 0.0,
+        "performance": 0.0,
+        "quality": 0.0,
+        "oee": 0.0
+    },
+    "target_oee": 85.0,
+    "raw_model_response": "EXECUTIVE SUMMARY:\n\nThe current OEE is 53.57%, below the target of 85.00%. Performance is the weakest KPI at 54.87%, while Quality is the strongest at 99.85%.  \n\nMAIN LOSS DRIVER: Fillpac 4 Belt Not Running accounts for 178.81 minutes of classified downtime, representing 37.91% of total classified downtime.\n\nPERFORMANCE CONCERN: The actual good bags produced are 35,913 while the expected good bags were 65,450. This represents a production gap of 29,537 bags.\n\nSTRONGEST KPI: Quality is the strongest KPI at 99.85%.\n\nWEEK-OVER-WEEK TREND: Availability increased by 97.77 percentage points from the previous week, Performance increased by 54.87 percentage points from the previous week, and Quality increased by 99.85 percentage points from the previous week.\n\nQUALITY SUMMARY:  The total bad bags are 53 bags, representing a quality loss of 0.15%. The largest contributor to this loss is Burst Bags at 53 bags (100.00% of recorded quality loss).\n\nMAIN QUALITY ISSUE: Burst Bags account for 53 bags of recorded quality loss.\n\nKEY DECISION POINT:  Prioritize investigation of the largest supplied downtime driver, Fillpac 4 Belt Not Running.\n\n\nMISSING DATA: No material data gaps identified."
+}

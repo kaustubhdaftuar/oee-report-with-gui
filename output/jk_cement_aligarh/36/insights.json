@@ -1,0 +1,97 @@
+{
+    "site_id": "jk_cement_aligarh",
+    "report_week": 36,
+    "machine": "Fillpac 1, Fillpac 2",
+    "ai_insights": {
+        "executive_summary": "The current OEE is 28.77%, below the target of 85.00%. The weakest KPI is Performance at 29.95%. The strongest KPI is Quality at 98.28%.",
+        "main_loss_driver": "Fillpac 2 Main Drive Stop accounts for 54.35% of classified downtime, contributing 4933.48 minutes.",
+        "performance_concern": "The actual performance value of 29.95% is significantly lower than the expected value of 1584.829 bags. The production gap is 1,110,240 bags.",
+        "strongest_kpi": "Quality at 98.28%.",
+        "week_over_week_trend": "No prior week's verified data exists for comparison.",
+        "quality_summary": "The quality loss is 1.72% with Out of Limit Bags accounting for 65.77% of the recorded quality loss and Burst Bags contributing 34.23%.",
+        "main_quality_issue": "Out of Limit Bags account for 65.77% of the recorded quality loss, totaling 5,475 bags.",
+        "key_decision_point": "Prioritize investigating the Fillpac 2 Main Drive Stop to reduce downtime and improve overall OEE.",
+        "missing_data": "No material data gaps identified."
+    },
+    "executive_summary": "The current OEE is 28.77%, below the target of 85.00%. The weakest KPI is Performance at 29.95%. The strongest KPI is Quality at 98.28%.",
+    "main_loss_driver": "Fillpac 2 Main Drive Stop accounts for 54.35% of classified downtime, contributing 4933.48 minutes.",
+    "performance_concern": "The actual performance value of 29.95% is significantly lower than the expected value of 1584.829 bags. The production gap is 1,110,240 bags.",
+    "strongest_kpi": "Quality at 98.28%.",
+    "week_over_week_trend": "No prior week's verified data exists for comparison.",
+    "quality_summary": "The quality loss is 1.72% with Out of Limit Bags accounting for 65.77% of the recorded quality loss and Burst Bags contributing 34.23%.",
+    "main_quality_issue": "Out of Limit Bags account for 65.77% of the recorded quality loss, totaling 5,475 bags.",
+    "key_decision_point": "Prioritize investigating the Fillpac 2 Main Drive Stop to reduce downtime and improve overall OEE.",
+    "missing_data": "No material data gaps identified.",
+    "verified_kpis": {
+        "availability": 97.78,
+        "performance": 29.95,
+        "quality": 98.28,
+        "oee": 28.77
+    },
+    "verified_status": {
+        "availability": "good",
+        "performance": "critical",
+        "quality": "good",
+        "oee": "Below Target"
+    },
+    "verified_performance": {
+        "actual_good_bags": 474589,
+        "expected_good_bags": 1584829,
+        "production_gap": 1110240
+    },
+    "verified_quality": {
+        "good_bags": 474589,
+        "burst_bags": 2849,
+        "out_of_limit": 5475,
+        "total_bad_bags": 8324,
+        "total_produced_bags": 482913,
+        "quality_loss_percentage": 1.723705926326274,
+        "contributors": [
+            {
+                "reason": "Out of Limit Bags",
+                "bags": 5475
+            },
+            {
+                "reason": "Burst Bags",
+                "bags": 2849
+            }
+        ]
+    },
+    "verified_downtime": {
+        "fault_duration": 1212829.82,
+        "fault_scaled": 387327.04,
+        "ideal_fault": 228.53,
+        "planned_production_time": 51.07804973522798,
+        "total_available_time": 20264.908328513306,
+        "total_availability_loss": 0.0,
+        "total_classified_downtime": 9077.61667838494,
+        "contributors": [
+            {
+                "reason": "Fillpac 2 Main Drive Stop",
+                "minutes": 4933.476778451602
+            },
+            {
+                "reason": "Fillpac 1 Main Drive Stop",
+                "minutes": 3739.8998666127522
+            },
+            {
+                "reason": "Fillpac 2 Belt Not Running",
+                "minutes": 404.2400333205859
+            }
+        ]
+    },
+    "verified_shift_changeover": {
+        "shift_a_minutes": 0.0,
+        "shift_b_minutes": 0.0,
+        "shift_c_minutes": 0.0,
+        "total_minutes": 0.0
+    },
+    "previous_week": {
+        "availability": null,
+        "performance": null,
+        "quality": null,
+        "oee": null
+    },
+    "target_oee": 85.0,
+    "raw_model_response": "## Weekly OEE Management Narrative\n\n**EXECUTIVE SUMMARY:**  The current OEE is 28.77%, below the target of 85.00%. The weakest KPI is Performance at 29.95%. The strongest KPI is Quality at 98.28%. \n\n**MAIN LOSS DRIVER:** Fillpac 2 Main Drive Stop accounts for 54.35% of classified downtime, contributing 4933.48 minutes.\n\n**PERFORMANCE CONCERN:**  The actual performance value of 29.95% is significantly lower than the expected value of 1584.829 bags. The production gap is 1,110,240 bags.\n\n**STRONGEST KPI:** Quality at 98.28%.\n\n**WEEK-OVER-WEEK TREND:**  No prior week's verified data exists for comparison.\n\n**QUALITY SUMMARY:**  The quality loss is 1.72% with Out of Limit Bags accounting for 65.77% of the recorded quality loss and Burst Bags contributing 34.23%.\n\n**MAIN QUALITY ISSUE:**  Out of Limit Bags account for 65.77% of the recorded quality loss, totaling 5,475 bags.\n\n**KEY DECISION POINT:**  Prioritize investigating the Fillpac 2 Main Drive Stop to reduce downtime and improve overall OEE.\n\n\n**MISSING DATA:** No material data gaps identified."
+}
