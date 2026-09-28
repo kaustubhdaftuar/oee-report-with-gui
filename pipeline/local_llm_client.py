@@ -32,7 +32,7 @@ MAX_NEW_TOKENS = 700
 
 REQUEST_TIMEOUT = 180
 
-TEMPERATURE = 0.2
+TEMPERATURE = 0.1
 
 MAX_DOWNTIME_POINTS = 10
 
@@ -251,9 +251,15 @@ def _metric_value(
 # LM STUDIO
 # ============================================================
 
-def check_lm_studio() -> None:
+def check_lm_studio() -> str:
     """
-    Verify that the LM Studio local server is reachable.
+    Verify that LM Studio is reachable and that a usable model
+    is available.
+
+    Returns the exact model identifier that should be sent to
+    the OpenAI-compatible endpoint. This avoids failures when
+    LM Studio exposes a model ID that differs slightly from the
+    local MODEL_NAME setting.
     """
 
     base_url = LM_STUDIO_URL.rsplit(
@@ -262,18 +268,14 @@ def check_lm_studio() -> None:
     )[0]
 
     try:
-
         response = requests.get(
             f"{base_url}/v1/models",
             timeout=10,
         )
-
     except requests.RequestException as exc:
-
         raise RuntimeError(
             "Unable to connect to LM Studio.\n\n"
-            f"Expected server:\n"
-            f"{LM_STUDIO_URL}\n\n"
+            f"Expected server:\n{LM_STUDIO_URL}\n\n"
             "Make sure:\n"
             "1. LM Studio is running.\n"
             "2. The Gemma model is loaded.\n"
@@ -281,29 +283,83 @@ def check_lm_studio() -> None:
         ) from exc
 
     if response.status_code >= 400:
-
         raise RuntimeError(
             "LM Studio local server returned "
             f"HTTP {response.status_code}.\n\n"
             f"Response:\n{response.text}"
         )
 
+    try:
+        model_data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            "LM Studio /v1/models returned invalid JSON.\n\n"
+            f"Response:\n{response.text}"
+        ) from exc
+
+    model_entries = model_data.get("data", [])
+    model_ids = []
+
+    if isinstance(model_entries, list):
+        for entry in model_entries:
+            if isinstance(entry, dict):
+                model_id = entry.get("id")
+                if model_id:
+                    model_ids.append(str(model_id))
+
+    if not model_ids:
+        raise RuntimeError(
+            "LM Studio is reachable, but /v1/models returned no "
+            "loaded models.\n\n"
+            "Load the Gemma model in LM Studio and make sure the "
+            "local server is running."
+        )
+
+    # Prefer the configured model if LM Studio exposes it.
+    if MODEL_NAME in model_ids:
+        return MODEL_NAME
+
+    # Small/local LM Studio setups commonly have exactly one loaded model.
+    # In that case, use its exact server-side ID automatically.
+    if len(model_ids) == 1:
+        selected = model_ids[0]
+        emit_message(
+            f"[LLM] Configured model '{MODEL_NAME}' was not found. "
+            f"Using the only loaded LM Studio model: '{selected}'."
+        )
+        return selected
+
+    raise RuntimeError(
+        "Configured LM Studio model was not found.\n\n"
+        f"Configured model: {MODEL_NAME}\n"
+        "Models exposed by LM Studio:\n"
+        + "\n".join(f"  - {model_id}" for model_id in model_ids)
+        + "\n\n"
+        "Either load the configured Gemma model or update MODEL_NAME "
+        "in local_llm_client.py to one of the IDs above."
+    )
 
 def generate_text(
     prompt: str,
     system_prompt: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> str:
     """
     Send the verified report data to Gemma through LM Studio.
+
+    The system instructions and user data are kept separate.
+    HTTP error bodies are included in failures so LM Studio's
+    actual reason for a 400 response is visible.
     """
 
     if system_prompt is None:
-
         system_prompt = REPORT_SYSTEM_PROMPT
 
-    payload = {
-        "model": MODEL_NAME,
+    if model_name is None:
+        model_name = check_lm_studio()
 
+    payload = {
+        "model": model_name,
         "messages": [
             {
                 "role": "system",
@@ -314,29 +370,37 @@ def generate_text(
                 "content": prompt,
             },
         ],
-
         "temperature": TEMPERATURE,
-
         "max_tokens": MAX_NEW_TOKENS,
-
         "stream": False,
     }
 
     last_error = None
 
     for attempt in range(2):
-
         try:
-
             response = requests.post(
                 LM_STUDIO_URL,
                 json=payload,
                 timeout=REQUEST_TIMEOUT,
             )
 
-            response.raise_for_status()
+            if response.status_code >= 400:
+                # Do not hide LM Studio's response body. It usually
+                # contains the exact reason for HTTP 400.
+                raise RuntimeError(
+                    "LM Studio returned HTTP "
+                    f"{response.status_code}.\n\n"
+                    f"Response body:\n{response.text}"
+                )
 
-            data = response.json()
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise RuntimeError(
+                    "LM Studio returned a non-JSON response.\n\n"
+                    f"Response body:\n{response.text}"
+                ) from exc
 
             choices = data.get(
                 "choices",
@@ -344,9 +408,9 @@ def generate_text(
             )
 
             if not choices:
-
                 raise RuntimeError(
-                    "LM Studio returned no choices."
+                    "LM Studio returned no choices.\n\n"
+                    f"Response body:\n{response.text}"
                 )
 
             message = choices[0].get(
@@ -363,25 +427,32 @@ def generate_text(
                 content,
                 str,
             ):
-
                 content = str(content)
 
             content = content.strip()
 
             if not content:
-
                 raise RuntimeError(
-                    "LM Studio returned an empty response."
+                    "LM Studio returned an empty response.\n\n"
+                    f"Response body:\n{response.text}"
                 )
 
             return content
 
         except Exception as exc:
-
             last_error = exc
 
-            if attempt == 0:
+            # Never retry a deterministic HTTP 400. Retrying the
+            # same invalid request only wastes time.
+            if (
+                isinstance(exc, RuntimeError)
+                and str(exc).startswith(
+                    "LM Studio returned HTTP 400"
+                )
+            ):
+                break
 
+            if attempt == 0:
                 time.sleep(1)
 
     raise RuntimeError(
@@ -577,23 +648,35 @@ def _extract_kpi(
 def _extract_previous_kpi(
     previous_week: Any,
     names: list[str],
-) -> float:
+) -> Optional[float]:
+    """
+    Returns None (not 0.0) whenever there is no verified previous-week
+    value to report. A missing previous week is NOT the same as a
+    previous week that was actually 0% — treating the two the same
+    caused every current-week KPI to be misreported as "decreased by
+    its own full value week over week" whenever no prior run existed.
+    Callers must handle None explicitly (e.g. "no data available"),
+    never feed it straight into arithmetic or string formatting.
+    """
 
     if not isinstance(
         previous_week,
         dict,
     ):
-        return 0.0
+        return None
 
     for name in names:
 
         if name in previous_week:
 
-            value = _safe_float(
-                _raw(
-                    previous_week[name]
-                )
+            raw_value = _raw(
+                previous_week[name]
             )
+
+            if raw_value is None:
+                return None
+
+            value = _safe_float(raw_value)
 
             if (
                 names[0].lower()
@@ -604,7 +687,7 @@ def _extract_previous_kpi(
 
             return value
 
-    return 0.0
+    return None
 
 
 def _extract_quality_contributors(
@@ -1096,6 +1179,19 @@ def extract_facts(
         ],
     )
 
+    # True only if at least one previous-week KPI was actually found.
+    # Drives whether build_data_block() is allowed to show the LLM
+    # any week-over-week comparison at all.
+    has_previous_week = any(
+        value is not None
+        for value in (
+            previous_oee,
+            previous_availability,
+            previous_performance,
+            previous_quality,
+        )
+    )
+
     # ========================================================
     # PRODUCTION
     # ========================================================
@@ -1113,43 +1209,56 @@ def extract_facts(
     ):
         performance_details = {}
 
+    # NOTE: analysis.json stores these as cell-info dicts,
+    # e.g. {"raw_value": 123, "display_value": "123", ...} —
+    # not plain numbers. _raw() unwraps that shape (and is a
+    # no-op on plain numbers/strings), so it MUST wrap the
+    # whole value before _safe_int() ever sees it. Without
+    # this, _safe_float() stringifies the dict, fails to
+    # parse it as a float, and silently returns 0 — which is
+    # exactly the "0 bags" / "0.00%" bug this fixes.
     actual_good_bags = _safe_int(
-        performance_details.get(
-            "actual_good_bags",
+        _raw(
             performance_details.get(
-                "good_bags",
-                _find_nested_value(
-                    analysis,
-                    [
-                        "actual_good_bags",
-                        "Actual Good Bags",
-                    ],
+                "actual_good_bags",
+                performance_details.get(
+                    "good_bags",
+                    _find_nested_value(
+                        analysis,
+                        [
+                            "actual_good_bags",
+                            "Actual Good Bags",
+                        ],
+                    ),
                 ),
-            ),
+            )
         )
     )
 
     expected_good_bags = _safe_int(
-        performance_details.get(
-            "expected_good_bags",
+        _raw(
             performance_details.get(
-                "expected_bags",
-                _find_nested_value(
-                    analysis,
-                    [
-                        "expected_good_bags",
-                        "Expected Good Bags",
-                        "expected_bags",
-                        "Expected Bags",
-                    ],
+                "expected_good_bags",
+                performance_details.get(
+                    "expected_bags",
+                    _find_nested_value(
+                        analysis,
+                        [
+                            "expected_good_bags",
+                            "Expected Good Bags",
+                            "expected_bags",
+                            "Expected Bags",
+                        ],
+                    ),
                 ),
-            ),
+            )
         )
     )
 
-    production_gap = (
+    production_gap = max(
         expected_good_bags
-        - actual_good_bags
+        - actual_good_bags,
+        0,
     )
 
     # ========================================================
@@ -1168,49 +1277,55 @@ def extract_facts(
         quality_details = {}
 
     good_bags = _safe_int(
-        quality_details.get(
-            "good_bags",
-            _find_nested_value(
-                analysis,
-                [
-                    "good_bags",
-                    "Good Bags",
-                ],
-            ),
+        _raw(
+            quality_details.get(
+                "good_bags",
+                _find_nested_value(
+                    analysis,
+                    [
+                        "good_bags",
+                        "Good Bags",
+                    ],
+                ),
+            )
         )
     )
 
     burst_bags = _safe_int(
-        quality_details.get(
-            "burst_bags",
+        _raw(
             quality_details.get(
-                "burst",
-                _find_nested_value(
-                    analysis,
-                    [
-                        "burst_bags",
-                        "Burst Bags",
-                    ],
+                "burst_bags",
+                quality_details.get(
+                    "burst",
+                    _find_nested_value(
+                        analysis,
+                        [
+                            "burst_bags",
+                            "Burst Bags",
+                        ],
+                    ),
                 ),
-            ),
+            )
         )
     )
 
     out_of_limit = _safe_int(
-        quality_details.get(
-            "out_of_limit_bags",
+        _raw(
             quality_details.get(
-                "out_of_limit",
-                _find_nested_value(
-                    analysis,
-                    [
-                        "out_of_limit_bags",
-                        "out_of_limit",
-                        "Out Of Limit",
-                        "Out of Limit",
-                    ],
+                "out_of_limit_bags",
+                quality_details.get(
+                    "out_of_limit",
+                    _find_nested_value(
+                        analysis,
+                        [
+                            "out_of_limit_bags",
+                            "out_of_limit",
+                            "Out Of Limit",
+                            "Out of Limit",
+                        ],
+                    ),
                 ),
-            ),
+            )
         )
     )
 
@@ -1227,13 +1342,15 @@ def extract_facts(
     if total_produced_bags <= 0:
 
         total_produced_bags = _safe_int(
-            _find_nested_value(
-                analysis,
-                [
-                    "total_produced_bags",
-                    "total_bags_produced",
-                    "Total Produced Bags",
-                ],
+            _raw(
+                _find_nested_value(
+                    analysis,
+                    [
+                        "total_produced_bags",
+                        "total_bags_produced",
+                        "Total Produced Bags",
+                    ],
+                )
             )
         )
 
@@ -1505,6 +1622,12 @@ def extract_facts(
                 previous_oee,
         },
 
+        # Whether ANY verified previous-week KPI was found. When False,
+        # every value in "previous_week" above is None (not 0) — build_data_block()
+        # must not compute or print a week-over-week delta in that case.
+        "has_previous_week":
+            has_previous_week,
+
         "performance_details": {
 
             "actual_good_bags":
@@ -1615,6 +1738,11 @@ def build_data_block(
         "previous_week"
     ]
 
+    has_previous_week = facts.get(
+        "has_previous_week",
+        False,
+    )
+
     performance = facts[
         "performance_details"
     ]
@@ -1627,9 +1755,6 @@ def build_data_block(
         "downtime"
     ]
 
-    shift = facts[
-        "shift_changeover"
-    ]
 
     lines = []
 
@@ -1758,30 +1883,52 @@ def build_data_block(
     # ========================================================
     # PREVIOUS WEEK
     # ========================================================
+    #
+    # BUGFIX: previously this section always printed a number —
+    # when no prior week's analysis.json existed, previous[name]
+    # defaulted to 0.0, so a KPI of e.g. 29.95% got reported to the
+    # LLM as "decreased by 29.95 percentage points from the previous
+    # week", which is fabricated (there was no previous week to
+    # compare against). We now only print previous-week values and
+    # deltas when has_previous_week is True; otherwise we say so
+    # explicitly so the LLM cannot infer a false comparison.
+
+    def _prev_line(label: str, key: str) -> str:
+        value = previous.get(key)
+        if value is None:
+            return f"{label}: NOT AVAILABLE (no verified previous-week value)"
+        return f"{label}: {_format_number(value)}%"
+
+    def _change_line(label: str, key: str) -> str:
+        prev_value = previous.get(key)
+        if prev_value is None:
+            return (
+                f"{label} change: NOT AVAILABLE — do not report a "
+                f"week-over-week change for {label}."
+            )
+        return (
+            f"{label} change: "
+            f"{kpis[key] - prev_value:+.2f} percentage points"
+        )
 
     lines.append(
         "PREVIOUS WEEK KPI VALUES"
     )
 
-    lines.append(
-        f"Availability: "
-        f"{_format_number(previous['availability'])}%"
-    )
+    if has_previous_week:
 
-    lines.append(
-        f"Performance: "
-        f"{_format_number(previous['performance'])}%"
-    )
+        lines.append(_prev_line("Availability", "availability"))
+        lines.append(_prev_line("Performance", "performance"))
+        lines.append(_prev_line("Quality", "quality"))
+        lines.append(_prev_line("OEE", "oee"))
 
-    lines.append(
-        f"Quality: "
-        f"{_format_number(previous['quality'])}%"
-    )
+    else:
 
-    lines.append(
-        f"OEE: "
-        f"{_format_number(previous['oee'])}%"
-    )
+        lines.append(
+            "NOT AVAILABLE — no verified previous-week analysis "
+            "exists for this site. Do not state or imply any "
+            "specific previous-week value."
+        )
 
     lines.append("")
 
@@ -1793,29 +1940,23 @@ def build_data_block(
         "CALCULATED WEEK-OVER-WEEK CHANGES"
     )
 
-    lines.append(
-        f"Availability change: "
-        f"{kpis['availability'] - previous['availability']:+.2f} "
-        f"percentage points"
-    )
+    if has_previous_week:
 
-    lines.append(
-        f"Performance change: "
-        f"{kpis['performance'] - previous['performance']:+.2f} "
-        f"percentage points"
-    )
+        lines.append(_change_line("Availability", "availability"))
+        lines.append(_change_line("Performance", "performance"))
+        lines.append(_change_line("Quality", "quality"))
+        lines.append(_change_line("OEE", "oee"))
 
-    lines.append(
-        f"Quality change: "
-        f"{kpis['quality'] - previous['quality']:+.2f} "
-        f"percentage points"
-    )
+    else:
 
-    lines.append(
-        f"OEE change: "
-        f"{kpis['oee'] - previous['oee']:+.2f} "
-        f"percentage points"
-    )
+        lines.append(
+            "NOT AVAILABLE — no previous week to compare against. "
+            "Do NOT report a week-over-week change, increase, or "
+            "decrease for any KPI. In WEEK-OVER-WEEK TREND, state "
+            "plainly that no prior week's verified data exists yet "
+            "for comparison, and describe only how the current "
+            "values compare to target."
+        )
 
     lines.append("")
 
@@ -2026,33 +2167,14 @@ def build_data_block(
     # ========================================================
     # SHIFT CHANGEOVER
     # ========================================================
-
-    lines.append(
-        "SHIFT CHANGEOVER DATA"
-    )
-
-    lines.append(
-        f"Shift A delay: "
-        f"{shift['shift_a_minutes']:.2f} minutes"
-    )
-
-    lines.append(
-        f"Shift B delay: "
-        f"{shift['shift_b_minutes']:.2f} minutes"
-    )
-
-    lines.append(
-        f"Shift C delay: "
-        f"{shift['shift_c_minutes']:.2f} minutes"
-    )
-
-    lines.append(
-        f"Total shift changeover delay: "
-        f"{shift['total_minutes']:.2f} minutes"
-    )
-
-    lines.append("")
-
+    #
+    # INTENTIONALLY NOT SENT TO GEMMA.
+    #
+    # Shift changeover data remains in facts and in the final
+    # insights.json for compatibility/audit purposes, but the
+    # user explicitly requires that it must not be included in
+    # the LLM prompt or used to generate AI insights.
+    #
     # ========================================================
     # SPOUT DATA
     # ========================================================
@@ -2325,6 +2447,9 @@ def build_insights(
 
         "key_decision_point":
             key_decision_point,
+
+        "missing_data":
+            missing_data,
     }
 
     missing = [
@@ -2349,6 +2474,97 @@ def build_insights(
             "--------------------------------------------------\n"
             f"{raw_response}\n"
             "--------------------------------------------------"
+        )
+
+    # ========================================================
+    # VALIDATE / NORMALIZE strongest_kpi SECTION
+    # ========================================================
+    #
+    # Gemma 2B can occasionally ignore the explicit instruction
+    # and write phrases such as "Quality ... OEE value ...".
+    # Because analysis.json is the numerical source of truth,
+    # we do not allow that model error to reach generate_docx.py.
+    #
+    # Only this one section is deterministically normalized.
+    # All other narrative remains the model's generated text.
+
+    avail_val = facts["kpis"]["availability"]
+    perf_val = facts["kpis"]["performance"]
+    qual_val = facts["kpis"]["quality"]
+
+    kpi_values = {
+        "Availability": avail_val,
+        "Performance": perf_val,
+        "Quality": qual_val,
+    }
+
+    max_kpi_value = max(kpi_values.values())
+
+    strongest_kpi_names = [
+        name
+        for name, val in kpi_values.items()
+        if abs(val - max_kpi_value) < 0.01
+    ]
+
+    strongest_kpi_text_lower = strongest_kpi.lower()
+
+    # Valid component-KPI names that actually appear in the
+    # verified strongest set.
+    mentions_valid_strongest = any(
+        re.search(
+            rf"\b{re.escape(name.lower())}\b",
+            strongest_kpi_text_lower,
+        )
+        for name in strongest_kpi_names
+    )
+
+    has_invalid_oee_wording = (
+        "oee value" in strongest_kpi_text_lower
+        or "oee of" in strongest_kpi_text_lower
+        or "oee is the strongest" in strongest_kpi_text_lower
+        or "strongest oee" in strongest_kpi_text_lower
+    )
+
+    claims_tie = (
+        "tied" in strongest_kpi_text_lower
+        or re.search(
+            r"\b(availability|performance|quality)\s+and\s+"
+            r"(availability|performance|quality)\b",
+            strongest_kpi_text_lower,
+        )
+        is not None
+    )
+
+    invalid_strongest_section = (
+        not mentions_valid_strongest
+        or has_invalid_oee_wording
+        or (
+            claims_tie
+            and len(strongest_kpi_names) == 1
+        )
+    )
+
+    if invalid_strongest_section:
+        if len(strongest_kpi_names) == 1:
+            strongest_name = strongest_kpi_names[0]
+            strongest_value = kpi_values[strongest_name]
+            strongest_kpi = (
+                f"{strongest_name} is the strongest KPI at "
+                f"{strongest_value:.2f}%"
+            )
+        else:
+            names_text = " and ".join(strongest_kpi_names)
+            strongest_value = kpi_values[strongest_kpi_names[0]]
+            strongest_kpi = (
+                f"{names_text} are tied as the strongest KPIs at "
+                f"{strongest_value:.2f}%"
+            )
+
+        emit_message(
+            "[LLM] strongest_kpi narrative was invalid for the "
+            "verified KPI ranking. It has been normalized from "
+            "analysis.json so the report cannot contain an "
+            "incorrect 'OEE value' statement."
         )
 
     # ========================================================
@@ -2598,7 +2814,7 @@ def generate_insights(
         progress_callback,
     )
 
-    check_lm_studio()
+    selected_model = check_lm_studio()
 
     # ========================================================
     # RESOLVE PATHS
@@ -2709,6 +2925,7 @@ def generate_insights(
     raw_response = generate_text(
         prompt,
         REPORT_SYSTEM_PROMPT,
+        selected_model,
     )
 
     cleaned_response = clean_response(

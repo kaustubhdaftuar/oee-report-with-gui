@@ -48,6 +48,8 @@ import json
 import re
 import platform
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 from copy import deepcopy
 from datetime import datetime
@@ -60,6 +62,41 @@ from docx.oxml import OxmlElement
 from docx.table import _Row
 from docx.text.paragraph import Paragraph
 from docx.image.image import Image as DocxImage
+
+
+# ════════════════════════════════════════════════════════════════════
+# UTILITY FUNCTIONS
+# ════════════════════════════════════════════════════════════════════
+
+def _safe_float(value, default=0.0):
+    """
+    Safely extract a float value from various data types.
+    Handles dict wrapping (raw_value, value, percentage keys).
+    """
+    if value is None:
+        return default
+    
+    if isinstance(value, bool):
+        return float(value)
+    
+    if isinstance(value, (int, float)):
+        return float(value)
+    
+    if isinstance(value, dict):
+        # Try common dict keys for wrapped values
+        for key in ("raw_value", "raw", "value", "percentage"):
+            if key in value:
+                return _safe_float(value[key], default)
+        return default
+    
+    try:
+        text = str(value).strip()
+        if not text:
+            return default
+        text = text.replace("%", "").replace(",", "").strip()
+        return float(text)
+    except Exception:
+        return default
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -635,60 +672,294 @@ def replace_paragraph_image(paragraph, image_path, width_emu=None, height_emu=No
 # PDF CONVERSION — cross-platform
 # ════════════════════════════════════════════════════════════════════
 
+def _windows_word_convert(docx_path: Path, pdf_path: Path):
+    """
+    Convert DOCX -> PDF using Microsoft Word directly through COM.
+
+    This is deliberately used instead of docx2pdf.convert() on Windows.
+    docx2pdf is also COM-based, but when the report is generated from the
+    Flask QueueManager worker thread it can leave Word/COM in an awkward
+    state and produce the generic:
+
+        (-2147352567, 'Exception occurred.', ... -2147467259)
+
+    error.
+
+    This implementation:
+      - uses DispatchEx so a dedicated Word instance is created
+      - uses absolute paths
+      - opens the document with ConfirmConversions=False
+      - exports directly with ExportAsFixedFormat
+      - closes the document in a finally block
+      - quits the dedicated Word instance
+      - releases COM references
+      - verifies that the PDF was actually created
+
+    No Word process is killed globally. This avoids closing a Word
+    instance that the user may already have open with unrelated files.
+    """
+
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError as exc:
+        raise ImportError(
+            "Windows PDF conversion requires pywin32.\n"
+            "Install it with:\n"
+            "  pip install pywin32"
+        ) from exc
+
+    docx_path = Path(docx_path).resolve()
+    pdf_path = Path(pdf_path).resolve()
+
+    if not docx_path.exists():
+        raise FileNotFoundError(
+            f"DOCX file not found:\n{docx_path}"
+        )
+
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Word constants used by ExportAsFixedFormat.
+    WD_EXPORT_FORMAT_PDF = 17
+    WD_EXPORT_OPTIMIZE_FOR_PRINT = 0
+    WD_EXPORT_RANGE_ALL_DOCUMENT = 0
+    WD_EXPORT_ITEM_DOCUMENT_CONTENTS = 0
+    WD_EXPORT_CREATE_BOOKMARKS_HEADING_BOOKMARKS = 1
+
+    word = None
+    document = None
+    com_initialized = False
+
+    try:
+        pythoncom.CoInitialize()
+        com_initialized = True
+
+        # DispatchEx creates a separate Word.Application instance.
+        # This is much safer from a Flask worker thread than attaching
+        # to an arbitrary existing Word instance.
+        word = win32com.client.DispatchEx("Word.Application")
+
+        word.Visible = False
+        word.DisplayAlerts = 0
+
+        # Some Word installations expose these properties and some
+        # versions do not. Failure to set them should not abort the
+        # conversion.
+        try:
+            word.ScreenUpdating = False
+        except Exception:
+            pass
+
+        try:
+            word.Options.SavePropertiesPrompt = False
+        except Exception:
+            pass
+
+        try:
+            word.Options.SaveInterval = 0
+        except Exception:
+            pass
+
+        input_path = str(docx_path)
+        output_path = str(pdf_path)
+
+        # Open the freshly generated report.
+        document = word.Documents.Open(
+            FileName=input_path,
+            ConfirmConversions=False,
+            ReadOnly=False,
+            AddToRecentFiles=False,
+            Visible=False,
+            OpenAndRepair=True,
+            NoEncodingDialog=True,
+        )
+
+        # Force Word to finish layout/recalculation before export.
+        try:
+            document.Repaginate()
+        except Exception:
+            pass
+
+        # ExportAsFixedFormat is more reliable than SaveAs/SaveAs2 for
+        # PDF generation and lets us explicitly control the PDF output.
+        document.ExportAsFixedFormat(
+            OutputFileName=output_path,
+            ExportFormat=WD_EXPORT_FORMAT_PDF,
+            OpenAfterExport=False,
+            OptimizeFor=WD_EXPORT_OPTIMIZE_FOR_PRINT,
+            Range=WD_EXPORT_RANGE_ALL_DOCUMENT,
+            From=0,
+            To=0,
+            Item=WD_EXPORT_ITEM_DOCUMENT_CONTENTS,
+            IncludeDocProps=True,
+            KeepIRM=True,
+            CreateBookmarks=WD_EXPORT_CREATE_BOOKMARKS_HEADING_BOOKMARKS,
+            DocStructureTags=True,
+            BitmapMissingFonts=True,
+            UseISO19005_1=False,
+        )
+
+        # Word can return from COM before the filesystem write has
+        # completely settled. Poll briefly for the actual PDF.
+        import time
+
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if pdf_path.exists() and pdf_path.stat().st_size > 0:
+                break
+            time.sleep(0.25)
+
+        if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+            raise RuntimeError(
+                "Microsoft Word completed the PDF export call, but "
+                f"the PDF was not created:\n{pdf_path}"
+            )
+
+    except Exception as exc:
+        # Include useful context without replacing the original COM
+        # exception. This makes the Flask log much easier to diagnose.
+        raise RuntimeError(
+            "Microsoft Word PDF conversion failed.\n"
+            f"DOCX: {docx_path}\n"
+            f"PDF:  {pdf_path}\n"
+            f"COM error: {exc}"
+        ) from exc
+
+    finally:
+        # Close only the document opened by this function.
+        if document is not None:
+            try:
+                document.Close(SaveChanges=False)
+            except Exception:
+                pass
+
+        # Quit only the dedicated Word instance created with DispatchEx.
+        if word is not None:
+            try:
+                word.Quit(SaveChanges=False)
+            except Exception:
+                try:
+                    word.Quit()
+                except Exception:
+                    pass
+
+        # Release COM references before CoUninitialize.
+        document = None
+        word = None
+
+        if com_initialized:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+
+def _libreoffice_convert(docx_path: Path, pdf_path: Path):
+    """
+    Convert DOCX -> PDF with LibreOffice on Linux/macOS.
+    """
+
+    docx_path = Path(docx_path).resolve()
+    pdf_path = Path(pdf_path).resolve()
+
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+    result = subprocess.run(
+        [
+            "libreoffice",
+            "--headless",
+            "--convert-to", "pdf",
+            "--outdir", str(pdf_path.parent),
+            str(docx_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            "LibreOffice conversion failed.\n"
+            f"stdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
+
+    # LibreOffice names the output after the input stem.
+    produced = pdf_path.parent / (docx_path.stem + ".pdf")
+
+    if produced != pdf_path and produced.exists():
+        if pdf_path.exists():
+            pdf_path.unlink()
+        produced.replace(pdf_path)
+
+    if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+        raise RuntimeError(
+            "LibreOffice reported success, but the PDF was not created.\n"
+            f"Expected: {pdf_path}\n"
+            f"stdout: {result.stdout}\n"
+            f"stderr: {result.stderr}"
+        )
+
+
 def convert_docx_to_pdf(docx_path: Path, pdf_path: Path):
     """
-    Convert DOCX to PDF. Windows uses docx2pdf (and treats the known
-    Word.Application.Quit() AttributeError as non-fatal, since the PDF
-    is usually created despite it); Linux/macOS uses LibreOffice.
+    Convert DOCX to PDF.
+
+    Windows:
+        Microsoft Word COM automation using a dedicated Word instance.
+
+    Linux/macOS:
+        LibreOffice headless conversion.
+
+    The old implementation used docx2pdf on Windows. That wrapper is
+    convenient interactively, but it can fail when called from the
+    Flask QueueManager worker thread. Direct Word COM automation is
+    used here so the Word application lifecycle is explicitly controlled.
     """
+
+    docx_path = Path(docx_path).resolve()
+    pdf_path = Path(pdf_path).resolve()
+
     if not docx_path.exists():
-        raise FileNotFoundError(f"DOCX file not found: {docx_path}")
+        raise FileNotFoundError(
+            f"DOCX file not found: {docx_path}"
+        )
 
     print("  Converting DOCX → PDF...")
     print(f"    Input: {docx_path}")
     print(f"    Output: {pdf_path}")
 
-    if platform.system() == "Windows":
+    # Remove a stale PDF from a previous attempt. This prevents an old
+    # PDF from making a failed conversion look successful.
+    if pdf_path.exists():
         try:
-            from docx2pdf import convert
-        except ImportError:
-            raise ImportError("docx2pdf library not found. Install it with:\n  pip install docx2pdf")
+            pdf_path.unlink()
+        except PermissionError as exc:
+            raise RuntimeError(
+                "The target PDF is currently locked by another process.\n"
+                f"Close the PDF and retry:\n{pdf_path}"
+            ) from exc
 
-        try:
-            convert(str(docx_path), str(pdf_path))
-        except AttributeError as attribute_error:
-            if "Word.Application.Quit" in str(attribute_error) or "Quit" in str(attribute_error):
-                if not pdf_path.exists():
-                    raise
-            else:
-                raise
+    if platform.system() == "Windows":
+        _windows_word_convert(
+            docx_path,
+            pdf_path,
+        )
     else:
-        result = subprocess.run(
-            [
-                "libreoffice",
-                "--headless",
-                "--convert-to", "pdf",
-                "--outdir", str(pdf_path.parent),
-                str(docx_path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
+        _libreoffice_convert(
+            docx_path,
+            pdf_path,
         )
 
-        if result.returncode != 0:
-            raise RuntimeError(f"LibreOffice conversion failed: {result.stderr}")
+    if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+        raise RuntimeError(
+            "PDF conversion finished without producing a valid PDF."
+        )
 
-        # LibreOffice names the output after the input stem; rename to
-        # the exact pdf_path the caller expects if they differ.
-        produced = pdf_path.parent / (docx_path.stem + ".pdf")
-        if produced != pdf_path and produced.exists():
-            produced.replace(pdf_path)
-
-    if not pdf_path.exists():
-        raise RuntimeError("PDF file was not created")
-
-    print("  ✓ PDF conversion successful")
+    print(
+        f"  ✓ PDF conversion successful "
+        f"({pdf_path.stat().st_size:,} bytes)"
+    )
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1091,6 +1362,16 @@ def generate_report_docx(site_id: str, week: int, config_manager: ConfigManager,
 
         return str(value).strip()
 
+    # ══════════════════════════════════════════════════════════════
+    # REQUIRED 9 SECTIONS FROM prompts.py
+    # ══════════════════════════════════════════════════════════════
+    #
+    # prompts.py specifies exactly 9 required output sections.
+    # ALL 9 must be present in insights.json.
+    #
+    # See: prompts.py lines 442-461, REQUIRED_SECTIONS
+    # ══════════════════════════════════════════════════════════════
+    
     required_ai_fields = [
         "executive_summary",
         "main_loss_driver",
@@ -1100,6 +1381,7 @@ def generate_report_docx(site_id: str, week: int, config_manager: ConfigManager,
         "quality_summary",
         "main_quality_issue",
         "key_decision_point",
+        "missing_data",
     ]
 
     missing_ai_fields = [
@@ -1126,6 +1408,7 @@ def generate_report_docx(site_id: str, week: int, config_manager: ConfigManager,
     quality_summary_text = ai_text("quality_summary")
     main_quality_text = ai_text("main_quality_issue")
     decision_body = ai_text("key_decision_point")
+    missing_data_text = ai_text("missing_data")
 
     # Never allow the template's own placeholder prose to be treated
     # as a successful AI result. This catches cases where a stale
@@ -1150,11 +1433,100 @@ def generate_report_docx(site_id: str, week: int, config_manager: ConfigManager,
             )
 
     # ══════════════════════════════════════════════════════════════
-    # PAGE 1 — COVER
+    # VALIDATE strongest_kpi: Prevent incorrect "tied" statements
     # ══════════════════════════════════════════════════════════════
+    #
+    # Per prompts.py line 131:
+    # "If two or more are tied, name all tied KPIs."
+    #
+    # This means: only say things are "tied" if they have the SAME
+    # numerical value. Do NOT say "Availability and Performance are
+    # tied" when they have different values (e.g., 98.88% vs 39.14%).
+    #
+    # Extract verified KPI values to validate strongest_kpi wording.
+    # ══════════════════════════════════════════════════════════════
+    
+    verified_kpis = insights.get("verified_kpis", {})
+    availability_val = _safe_float(verified_kpis.get("availability", 0.0))
+    performance_val = _safe_float(verified_kpis.get("performance", 0.0))
+    quality_val = _safe_float(verified_kpis.get("quality", 0.0))
+    
+    # Identify which KPI is actually the strongest
+    kpi_values = {
+        "Availability": availability_val,
+        "Performance": performance_val,
+        "Quality": quality_val,
+    }
+    max_value = max(kpi_values.values())
+    strongest_kpis = [
+        name for name, val in kpi_values.items()
+        if abs(val - max_value) < 0.01
+    ]
+    
+    # Check if strongest_kpi text incorrectly uses "tied" for non-tied values
+    strongest_kpi_lower = strongest_kpi_text.lower()
+    
+    # ══════════════════════════════════════════════════════════════
+    # VALIDATION 1: Check for incorrect "tied" language
+    # ══════════════════════════════════════════════════════════════
+    if "tied" in strongest_kpi_lower or "and" in strongest_kpi_lower:
+        # Only allow "tied" language if there actually ARE tied values
+        if len(strongest_kpis) == 1:
+            # Only ONE strongest KPI, but text says "tied"
+            # This is an error in the LLM output
+            raise RuntimeError(
+                f"strongest_kpi field contains incorrect 'tied' language.\n"
+                f"Verified data shows {strongest_kpis[0]} is the single strongest KPI.\n"
+                f"Text: {strongest_kpi_text}\n"
+                f"File: {insights_file}\n\n"
+                "The LLM may have generated imprecise wording. "
+                "Ensure REPORT_SYSTEM_PROMPT in prompts.py rule 3 (KPI RANKING) "
+                "is properly followed."
+            )
+    
+    # ══════════════════════════════════════════════════════════════
+    # VALIDATION 2: Check for incorrect "OEE value" terminology
+    # ══════════════════════════════════════════════════════════════
+    #
+    # The strongest_kpi section discusses COMPONENT KPIs only:
+    # - Availability
+    # - Performance
+    # - Quality
+    #
+    # OEE is the PRODUCT of these three, not a "strongest" candidate.
+    # If the text says "OEE value" in strongest_kpi, that's imprecise.
+    #
+    # Example ERROR:
+    #   Text: "Quality remains strong with an OEE value of 99.07%"
+    #   Problem: 99.07% is the QUALITY value, not an OEE value
+    #   Fix: "Quality is the strongest KPI at 99.07%"
+    # ══════════════════════════════════════════════════════════════
+    
+    if "oee value" in strongest_kpi_lower or "oee of" in strongest_kpi_lower:
+        # Extract which KPI is actually at that percentage
+        actual_strongest = strongest_kpis[0] if strongest_kpis else "Unknown"
+        
+        raise RuntimeError(
+            f"strongest_kpi field incorrectly references 'OEE value'.\n"
+            f"The strongest_kpi section discusses component KPIs only:\n"
+            f"  - Availability\n"
+            f"  - Performance\n"
+            f"  - Quality\n\n"
+            f"OEE is the product of these three, not a 'strongest' component.\n\n"
+            f"Verified data shows {actual_strongest} is the strongest at "
+            f"{kpi_values.get(actual_strongest, 0):.2f}%\n\n"
+            f"Text: {strongest_kpi_text}\n"
+            f"File: {insights_file}\n\n"
+            f"Correct examples:\n"
+            f"  - \"Quality is the strongest KPI at 99.07%\"\n"
+            f"  - \"{actual_strongest} is the strongest at {kpi_values.get(actual_strongest, 0):.2f}%\"\n\n"
+            "The LLM may have confused component KPI values with OEE.\n"
+            "Ensure REPORT_SYSTEM_PROMPT in prompts.py is clear that\n"
+            "strongest_kpi discusses component KPIs, not OEE."
+        )
 
-    emit("Filling cover page...")
-
+    # ══════════════════════════════════════════════════════════════
+    # PAGE 1 — COVER
     # ══════════════════════════════════════════════════════════════
 
     emit("Filling cover page...")
@@ -1358,13 +1730,46 @@ def generate_report_docx(site_id: str, week: int, config_manager: ConfigManager,
         def change_cell(name):
             return change_pp(changes[name]) if name in changes else "-"
 
-        management_insight = week_over_week_trend_text
+        def deterministic_kpi_insight(kpi_name, current_value):
+            """
+            Short, per-KPI insight built ONLY from verified analysis.json
+            numbers (previous_kpi / changes / KPI_TARGETS) — never the
+            LLM narrative. Each of the four rows previously received the
+            exact same 'management_insight' string (the single LLM
+            week_over_week_trend field), which produced four identical
+            paragraphs in the table. This gives each row its own,
+            factually-grounded sentence instead.
+            """
+            target = KPI_TARGETS[kpi_name]
+            gap = number(current_value) - target
+            gap_text = (
+                f"{abs(gap):.2f} points above the {target:.2f}% target"
+                if gap >= 0
+                else f"{abs(gap):.2f} points below the {target:.2f}% target"
+            )
 
+            if kpi_name.lower() in changes:
+                delta = changes[kpi_name.lower()]
+                trend_word = direction(delta).lower()
+                return (
+                    f"{kpi_name} {trend_word} by {abs(number(delta)):.2f} pp "
+                    f"week over week; currently {gap_text}."
+                )
+
+            return (
+                f"No verified previous-week value for {kpi_name} to "
+                f"compare against; currently {gap_text}."
+            )
+
+        # OEE's row carries the LLM's overall narrative (it's the
+        # one place a holistic, cross-KPI summary belongs); the
+        # individual component KPI rows get their own deterministic
+        # sentence so the table doesn't repeat one paragraph four times.
         comparison_rows = [
-            ("OEE", previous_cell("oee"), percentage(oee), change_cell("oee"), management_insight),
-            ("Availability", previous_cell("availability"), percentage(availability), change_cell("availability"), management_insight),
-            ("Performance", previous_cell("performance"), percentage(performance), change_cell("performance"), management_insight),
-            ("Quality", previous_cell("quality"), percentage(quality), change_cell("quality"), management_insight),
+            ("OEE", previous_cell("oee"), percentage(oee), change_cell("oee"), week_over_week_trend_text),
+            ("Availability", previous_cell("availability"), percentage(availability), change_cell("availability"), deterministic_kpi_insight("Availability", availability)),
+            ("Performance", previous_cell("performance"), percentage(performance), change_cell("performance"), deterministic_kpi_insight("Performance", performance)),
+            ("Quality", previous_cell("quality"), percentage(quality), change_cell("quality"), deterministic_kpi_insight("Quality", quality)),
         ]
 
         for row_data in comparison_rows:
@@ -2112,6 +2517,88 @@ def generate_report_docx(site_id: str, week: int, config_manager: ConfigManager,
     # SAVE DOCX / CONVERT TO PDF
     # ══════════════════════════════════════════════════════════════
 
+    def _is_file_writable(path: Path):
+        """
+        Check whether an existing file can actually be replaced.
+
+        On Windows, a DOCX may exist but still be locked by Word,
+        Explorer preview, antivirus, indexing, or another process.
+        Merely checking exists() is therefore not sufficient.
+        """
+        if not path.exists():
+            return True
+
+        try:
+            with open(path, "ab"):
+                pass
+            return True
+        except (PermissionError, OSError):
+            return False
+
+    def _safe_docx_save(document_obj, requested_path: Path) -> Path:
+        """
+        Save the generated DOCX without losing the new report when the
+        normal output filename is locked.
+
+        Strategy:
+          1. Try the requested filename.
+          2. If it is locked, save to a unique sibling filename.
+          3. Never delete or overwrite a locked existing report.
+          4. Return the path that was actually created.
+
+        This is important for the Flask QueueManager because a user may
+        have the previous report open in Word while generating the next
+        version.
+        """
+        requested_path = Path(requested_path).resolve()
+        requested_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Fast path: normal requested filename.
+        if _is_file_writable(requested_path):
+            try:
+                document_obj.save(str(requested_path))
+                if requested_path.exists() and requested_path.stat().st_size > 0:
+                    return requested_path
+            except PermissionError:
+                pass
+            except OSError as exc:
+                # Windows may surface a lock as a generic OSError.
+                if getattr(exc, "winerror", None) not in (5, 32, 33):
+                    raise
+
+        # The requested file is locked. Do NOT delete it.
+        stem = requested_path.stem
+        suffix = requested_path.suffix or ".docx"
+
+        for attempt in range(1, 11):
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            candidate = requested_path.parent / (
+                f"{stem}_{timestamp}_{attempt}{suffix}"
+            )
+
+            try:
+                document_obj.save(str(candidate))
+
+                if candidate.exists() and candidate.stat().st_size > 0:
+                    print(
+                        "  ⚠ Existing DOCX is locked; "
+                        f"saved new report as: {candidate.name}"
+                    )
+                    return candidate
+
+            except PermissionError:
+                continue
+            except OSError:
+                continue
+
+        raise PermissionError(
+            "Unable to save the generated DOCX.\n\n"
+            f"Requested path is locked or unavailable:\n{requested_path}\n\n"
+            "Close the existing report.docx in Microsoft Word/Explorer "
+            "and run the report again."
+        )
+
+
     emit("Saving DOCX report...")
 
     machine_slug = "_".join(str(machine).replace("/", " ").replace("\\", " ").split())
@@ -2123,8 +2610,22 @@ def generate_report_docx(site_id: str, week: int, config_manager: ConfigManager,
     pdf_path = Path(pdf_path) if pdf_path else report_dir / f"Weekly_OEE_Report_{machine_slug}_Week_{week}.pdf"
 
     report_dir.mkdir(parents=True, exist_ok=True)
-    document.save(str(docx_path))
+
+    # Save safely. If report.docx is currently open/locked, the new
+    # report gets a unique filename rather than failing the entire job.
+    docx_path = _safe_docx_save(document, docx_path)
     emit(f"  DOCX saved: {docx_path.name}")
+
+    # IMPORTANT:
+    # If a fallback DOCX filename was required, the PDF must use the
+    # same stem. Otherwise Word would create a PDF with the fallback
+    # DOCX name while the API is still looking for the original name.
+    requested_pdf_path = Path(pdf_path).resolve()
+
+    if docx_path.stem != requested_pdf_path.stem:
+        pdf_path = docx_path.with_suffix(".pdf")
+    else:
+        pdf_path = requested_pdf_path
 
     emit("Converting to PDF...")
 
@@ -2134,7 +2635,14 @@ def generate_report_docx(site_id: str, week: int, config_manager: ConfigManager,
         emit("Report generation complete!")
         return docx_path, pdf_path
     except Exception as e:
-        emit(f"  ⚠ PDF conversion failed (report available as DOCX): {e}")
+        emit(
+            "  ⚠ PDF conversion failed "
+            f"({type(e).__name__}): {e}"
+        )
+        emit(
+            "  DOCX report is still available at: "
+            f"{docx_path}"
+        )
         emit("Report generation complete (DOCX only)!")
         return docx_path, docx_path
 

@@ -1,3 +1,5 @@
+import re
+
 """
 ============================================================
 OEE WEEKLY MANAGEMENT REPORT — GEMMA 2 2B
@@ -114,13 +116,17 @@ unless relative percentage change is explicitly requested.
 3. KPI RANKING
 ============================================================
 
-Compare ONLY:
+Compare ONLY the three component KPIs:
 
 - Availability
 - Performance
 - Quality
 
-Do NOT use OEE as the weakest or strongest component KPI.
+Do NOT use OEE in this comparison.
+
+CRITICAL: OEE is the PRODUCT of these three component
+KPIs, NOT a component itself. Never describe OEE values
+in the strongest_kpi or weakest_kpi sections.
 
 The weakest KPI is the lowest of Availability,
 Performance and Quality.
@@ -128,7 +134,23 @@ Performance and Quality.
 The strongest KPI is the highest of Availability,
 Performance and Quality.
 
-If two or more are tied, name all tied KPIs.
+WORDING EXAMPLES (Correct):
+
+"Quality is the strongest KPI at 99.07%"
+"Availability is the weakest at 85.14%"
+"Quality and Availability are tied at 99.00%"
+
+WORDING EXAMPLES (INCORRECT - Do NOT write these):
+
+"Quality remains strong with an OEE value of 99.07%"
+  → Wrong: 99.07% is the Quality value, not OEE
+"The strongest KPI has an OEE of 99.07%"
+  → Wrong: Mixing component KPI with OEE product
+"Quality at 99.07% and OEE at 38.34% are highest"
+  → Wrong: OEE is not ranked against component KPIs
+
+If two or more component KPIs are tied, name all
+tied KPIs and their value.
 
 ============================================================
 4. OEE
@@ -370,6 +392,16 @@ STRONGEST KPI:
 Identify the strongest component KPI among Availability,
 Performance and Quality. Include its supplied value.
 
+CRITICAL: Do NOT mention OEE values in this section.
+Do NOT say "OEE value" when referring to a component KPI.
+
+Example CORRECT:
+"Quality is the strongest KPI at 99.07%"
+
+Example INCORRECT:
+"Quality is the strongest with an OEE value of 99.07%"
+(99.07% is the Quality value, not an OEE value)
+
 WEEK-OVER-WEEK TREND:
 Describe Availability, Performance and Quality changes
 versus the previous week using percentage points.
@@ -425,8 +457,12 @@ def build_prompt(
     This signature intentionally matches local_llm_client.py.
     """
 
+    # REPORT_SYSTEM_PROMPT is already sent as the dedicated
+    # system message by local_llm_client.generate_text().
+    # Keeping it out of the user message avoids duplicating the
+    # entire instruction set and gives small models more room for
+    # the actual verified data and required output.
     return (
-        f"{system_prompt}\n\n"
         f"{REPORT_INSTRUCTIONS}\n\n"
         "============================================================\n"
         "VERIFIED DATA FROM PYTHON\n"
