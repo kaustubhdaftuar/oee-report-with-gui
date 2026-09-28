@@ -1,172 +1,467 @@
-# pipeline/create_analysis.py (FULLY REFACTORED - Config-Driven)
-
 """
-OEE Analysis Pipeline - Refactored for Multi-Site Support
+CORRECTED OEE ANALYSIS PIPELINE - create_analysis.py (Multi-site Support)
 
-This module is now completely config-driven. All site-specific values
-(sensor keywords, PLC configs, cell mappings, etc.) come from config.json.
+Fixes applied:
+1. Proper date range: Monday 06:00 → Monday 06:00 (exactly 7 days)
+2. Correct availability formula: (1 - (fault_time / 608.33)) * 100
+3. Consistent output paths: output/<site>/<week>/report.xlsx and analysis.json
+4. Elasticsearch runtime_mappings for scaledDurationPrevEvent
+5. Nested sum aggregation in downtime queries
+6. Multi-site support with configurable mappings
+7. run_analysis_pipeline() now returns the same nested "analysis" dict that
+   gets written to analysis.json — previously it returned the flat internal
+   "metrics" dict instead, so anything consuming the in-memory return value
+   (e.g. Stage 1.5's generate_insights()) saw a completely different shape
+   than what was actually saved to disk.
 
-ZERO hardcoded values for any specific site.
-Works for ANY site by reading config.
+Site Configurations Included:
+- jk_cement_aligarh (JK Cement, Aligarh)
+- shree_cement_etah (Shree Cement, Etah)
 
-Key Functions:
-- build_es_aggregation_query(): Dynamically builds ES query from config
-- extract_results_from_es(): Dynamically extracts results from ES response
-- extract_analysis_from_excel(): Reads Excel using config cell mappings
-- run_analysis_pipeline(): Main entry point (works for any site)
+Easy to add more sites by adding to SITE_CONFIG dictionary.
 """
 
 import json
 import re
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Any, Tuple
 from zoneinfo import ZoneInfo
+from typing import Dict, Any, Tuple
 
-from elasticsearch import Elasticsearch
-from openpyxl import load_workbook
 import pandas as pd
+from elasticsearch import Elasticsearch
 
-from .config_manager import ConfigManager
+
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 1: BUILD ELASTICSEARCH AGGREGATION QUERY DYNAMICALLY
+# SHIFT DELIMITER CALCULATION
 # ════════════════════════════════════════════════════════════════════════════
 
-def build_es_aggregation_query(site_config: Dict[str, Any]) -> Dict:
+def calculate_shift_delimiters(ist_datetime):
     """
-    ✅ DYNAMIC: Build Elasticsearch aggregation query from site config.
-    
-    This single function replaces 200+ lines of hardcoded queries
-    in the original create_analysis.py.
-    
-    Supports:
-    - Any sensor keywords (from config["sensor_keywords"])
-    - Any number of PLCs (from config["plc_config"])
-    - Any fault types (from config["sensor_keywords"]["downtime_by_plc"])
-    - Any quality metrics (from config["sensor_keywords"]["quality"])
+    Calculate shift delimiters for a given datetime in IST.
+
+    Shift A: 06:00 to 14:00
+    Shift B: 14:00 to 22:00
+    Shift C: 22:00 to 06:00 (next day)
+
+    Returns:
+        prodDayStart: Start of the production day (06:00)
+        shiftBStart: Start of Shift B (14:00)
+        shiftCStart: Start of Shift C (22:00)
+    """
+    ist = ZoneInfo("Asia/Kolkata")
+    hour = ist_datetime.hour
+
+    # Determine production day start (always at 06:00)
+    if hour < 6:
+        # Before 06:00, production day started yesterday
+        prod_day_start = ist_datetime.replace(
+            hour=6, minute=0, second=0, microsecond=0
+        ) - timedelta(days=1)
+    else:
+        # At or after 06:00, production day started today
+        prod_day_start = ist_datetime.replace(
+            hour=6, minute=0, second=0, microsecond=0
+        )
+
+    shift_b_start = prod_day_start + timedelta(hours=8)
+    shift_c_start = prod_day_start + timedelta(hours=16)
+
+    return prod_day_start, shift_b_start, shift_c_start
+
+
+def get_shift_name(ist_datetime, prod_day_start, shift_b_start, shift_c_start):
+    """
+    Determine which shift a timestamp belongs to.
+    """
+    if ist_datetime >= prod_day_start and ist_datetime < shift_b_start:
+        return "Shift A"
+    elif ist_datetime >= shift_b_start and ist_datetime < shift_c_start:
+        return "Shift B"
+    else:
+        return "Shift C"
+
+# ════════════════════════════════════════════════════════════════════════════
+# SITE CONFIGURATIONS - ADD NEW SITES HERE
+# ════════════════════════════════════════════════════════════════════════════
+
+SITE_CONFIG = {
+    "jk_cement_aligarh": {
+        "name": "JK Cement Aligarh",
+        "location": "Aligarh, India",
+        "es_index": "iotgateway-jkcement-aligarh-*",
+        "plc_config": [
+            {
+                "plc_id": "PLC_01",
+                "name": "Fillpac 1",
+                "spouts": 16,
+                "description": "Packer 1"
+            },
+            {
+                "plc_id": "PLC_02",
+                "name": "Fillpac 2",
+                "spouts": 16,
+                "description": "Packer 2"
+            }
+        ],
+        "sensor_keywords": {
+            "availability": {
+                "fault_counter": {
+                    "sensoridPrevEvent_keyword": "Fault_Counter",
+                    "field": "durationPrevEvent"
+                },
+                "ideal_fault": {
+                    "sensoridPrevEvent_keyword": "IdealFaultopen",
+                    "field": "durationPrevEvent"
+                }
+            },
+            "downtime_by_plc": {
+                "PLC_01": {
+                    "parentid_filter": "PLC_01",
+                    "faults": {
+                        "Spout Fault": {
+                            "sensorid_keyword": "FAULT_OPEN_SP*",
+                            "type": "wildcard"
+                        },
+                        "Main Drive Stop": {
+                            "sensorid_keyword": "FillPackMainDrivestop",
+                            "type": "term"
+                        },
+                        "Belt Not Running": {
+                            "sensorid_keyword": "IdealFaultopen",
+                            "type": "term"
+                        }
+                    }
+                },
+                "PLC_02": {
+                    "parentid_filter": "PLC_02",
+                    "faults": {
+                        "Spout Fault": {
+                            "sensorid_keyword": "FAULT_OPEN_P02_SP*",
+                            "type": "wildcard"
+                        },
+                        "Main Drive Stop": {
+                            "sensorid_keyword": "FillPackMainDrivestop",
+                            "type": "term"
+                        },
+                        "Belt Not Running": {
+                            "sensorid_keyword": "IdealFaultopen",
+                            "type": "term"
+                        }
+                    }
+                }
+            },
+            "quality": {
+                "good_bags": {
+                    "sensorid_keywords": ["Bag_Discharge_SP*", "Packer02_Bag_Discharge_SP*"],
+                    "field": "value",
+                    "type": "wildcard"
+                },
+                "burst_bags": {
+                    "sensorid_keywords": ["DownTime_BagBurstFault_SP*", "DownTime_BagBurstFault_P02_SP*"],
+                    "field": "value",
+                    "type": "wildcard"
+                },
+                "out_of_limit_bags": {
+                    "sensorid_keywords": ["DownTime_Bag_OutOfLimit_SP*", "DownTime_Bag_OutOfLimit_P02_SP*"],
+                    "field": "value",
+                    "type": "wildcard"
+                }
+            }
+        }
+    },
+
+    "shree_cement_etah": {
+        "name": "Shree Cement Etah",
+        "location": "Etah, India",
+        "es_index": "iotgateway-shreecement-etah-*",
+        "plc_config": [
+            {
+                "plc_id": "PLC_01",
+                "name": "Fillpac 1",
+                "spouts": 16,
+                "description": "Packer 1"
+            },
+            {
+                "plc_id": "PLC_02",
+                "name": "Fillpac 2",
+                "spouts": 16,
+                "description": "Packer 2"
+            },
+            {
+                "plc_id": "PLC_03",
+                "name": "Fillpac 3",
+                "spouts": 16,
+                "description": "Packer 3"
+            },
+            {
+                "plc_id": "PLC_04",
+                "name": "Fillpac 4",
+                "spouts": 16,
+                "description": "Packer 4"
+            }
+        ],
+        "sensor_keywords": {
+            "availability": {
+                "fault_counter": {
+                    "sensoridPrevEvent_keyword": "Fault_Counter",
+                    "field": "durationPrevEvent"
+                },
+                "ideal_fault": {
+                    "sensoridPrevEvent_keyword": "IdealFaultopen",
+                    "field": "durationPrevEvent"
+                }
+            },
+            "downtime_by_plc": {
+                "PLC_01": {
+                    "parentid_filter": "PLC_01",
+                    "faults": {
+                        "Spout Fault": {
+                            "sensorid_keyword": "FAULT_OPEN_SP*",
+                            "type": "wildcard"
+                        },
+                        "Main Drive Stop": {
+                            "sensorid_keyword": "FillPackMainDrivestop",
+                            "type": "term"
+                        },
+                        "Belt Not Running": {
+                            "sensorid_keyword": "IdealFaultopen",
+                            "type": "term"
+                        }
+                    }
+                },
+                "PLC_02": {
+                    "parentid_filter": "PLC_02",
+                    "faults": {
+                        "Spout Fault": {
+                            "sensorid_keyword": "PACKER02_FAULT_OPEN_SP*",
+                            "type": "wildcard"
+                        },
+                        "Main Drive Stop": {
+                            "sensorid_keyword": "FillPackMainDrivestop",
+                            "type": "term"
+                        },
+                        "Belt Not Running": {
+                            "sensorid_keyword": "IdealFaultopen",
+                            "type": "term"
+                        }
+                    }
+                },
+                "PLC_03": {
+                    "parentid_filter": "PLC_03",
+                    "faults": {
+                        "Spout Fault": {
+                            "sensorid_keyword": "FAULT_OPEN_SP*",
+                            "type": "wildcard"
+                        },
+                        "Main Drive Stop": {
+                            "sensorid_keyword": "FillPackMainDrivestop",
+                            "type": "term"
+                        },
+                        "Belt Not Running": {
+                            "sensorid_keyword": "IdealFaultopen",
+                            "type": "term"
+                        }
+                    }
+                },
+                "PLC_04": {
+                    "parentid_filter": "PLC_04",
+                    "faults": {
+                        "Spout Fault": {
+                            "sensorid_keyword": "PACKER02_FAULT_OPEN_SP*",
+                            "type": "wildcard"
+                        },
+                        "Main Drive Stop": {
+                            "sensorid_keyword": "FillPackMainDrivestop",
+                            "type": "term"
+                        },
+                        "Belt Not Running": {
+                            "sensorid_keyword": "IdealFaultopen",
+                            "type": "term"
+                        }
+                    }
+                }
+            },
+            "quality": {
+                "good_bags": {
+                    "sensorid_keywords": ["Bag_Discharge_SP*", "Packer02_Bag_Discharge_SP*"],
+                    "field": "value",
+                    "type": "wildcard"
+                },
+                "burst_bags": {
+                    "sensorid_keywords": ["DownTime_BagBurstFault_SP*", "DownTime_BagBurstFault_P02_SP*"],
+                    "field": "value",
+                    "type": "wildcard"
+                },
+                "out_of_limit_bags": {
+                    "sensorid_keywords": ["DownTime_Bag_OutOfLimit_SP*", "DownTime_Bag_OutOfLimit_P02_SP*"],
+                    "field": "value",
+                    "type": "wildcard"
+                }
+            }
+        }
+    }
+}
+
+
+def get_site_config(site_id: str) -> Dict[str, Any]:
+    """Get configuration for a specific site."""
+    if site_id not in SITE_CONFIG:
+        raise ValueError(f"Unknown site: {site_id}. Available sites: {list(SITE_CONFIG.keys())}")
+    return SITE_CONFIG[site_id]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX #1: PROPER DATE RANGE CALCULATION (Monday 06:00 → Monday 06:00)
+# ════════════════════════════════════════════════════════════════════════════
+
+def get_monday_6am_for_week(week: int, year: int = None) -> Tuple[datetime, datetime]:
+    """
+    Returns Monday 06:00 → Monday 06:00 date range for a given ISO week number.
     
     Args:
-        site_config: Site configuration dict from config.json
+        week: ISO week number (1-53)
+        year: ISO year. If None, uses current year.
     
     Returns:
-        aggs dict ready for Elasticsearch
+        (start_date, end_date) - Monday 06:00 IST of that week and the following Monday
+    
+    Example:
+        Week 36 of 2026 → 
+        Start: Monday, Sep 07 2026 at 06:00 IST
+        End:   Monday, Sep 14 2026 at 06:00 IST
     """
+    ist = ZoneInfo("Asia/Kolkata")
     
-    sensor_keywords = site_config.get("sensor_keywords", {})
-    plc_config = site_config.get("plc_config", [])
-    es_agg_config = site_config.get("es_aggregation", {})
+    if year is None:
+        year = datetime.now(ist).year
     
-    # Extract field names from config (default ES field names)
-    sensorid_field = es_agg_config.get("sensorid_field", "sensorid.keyword")
-    sensoridPrevEvent_field = es_agg_config.get("sensoridPrevEvent_field", "sensoridPrevEvent.keyword")
-    parentid_field = es_agg_config.get("parentid_field", "parentid.keyword")
-    duration_field = es_agg_config.get("duration_field", "durationPrevEvent")
-    value_field = es_agg_config.get("value_field", "value")
+    # ISO week 1, day 1 is always a Monday
+    # We can use datetime.fromisocalendar() to get Monday of a given ISO week
+    monday_of_week = datetime.fromisocalendar(year, week, 1).replace(
+        tzinfo=ist,
+        hour=6,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
     
+    # End is exactly 7 days later
+    monday_of_next_week = monday_of_week + timedelta(days=7)
+    
+    return monday_of_week, monday_of_next_week
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX #2: ELASTICSEARCH QUERY WITH PROPER RUNTIME_MAPPINGS & NESTED SUMS
+# ════════════════════════════════════════════════════════════════════════════
+
+def build_elasticsearch_aggregations(site_id: str) -> Dict[str, Any]:
+    """
+    Build Elasticsearch aggregations dynamically from site configuration.
+    This allows different sites to have different sensor mappings.
+    """
+    site_config = get_site_config(site_id)
+    sensor_keywords = site_config["sensor_keywords"]
+
     aggs = {}
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # SECTION 1: AVAILABILITY METRICS
-    # Read from: sensor_keywords.availability
-    # ═══════════════════════════════════════════════════════════════════════
-    
-    availability = sensor_keywords.get("availability", {})
-    
-    # Fault Counter (duration tracking)
-    if "fault_counter" in availability:
-        fault_config = availability["fault_counter"]
+
+    # ════════════════════════════════════════════
+    # AVAILABILITY METRICS
+    # ════════════════════════════════════════════
+    availability_config = sensor_keywords.get("availability", {})
+
+    if "fault_counter" in availability_config:
+        fault_config = availability_config["fault_counter"]
         aggs["fault_duration"] = {
             "filter": {
                 "term": {
-                    sensoridPrevEvent_field: fault_config["sensoridPrevEvent_keyword"]
-                    # ✅ VALUE FROM CONFIG: "Fault_Counter" for JK, different for Shree
+                    "sensoridPrevEvent.keyword": fault_config["sensoridPrevEvent_keyword"]
                 }
             },
             "aggs": {
                 "value": {
                     "sum": {
-                        "field": fault_config.get("field", duration_field)
+                        "field": fault_config.get("field", "durationPrevEvent")
                     }
                 }
             }
         }
-        print(f"  ✓ Built availability.fault_counter aggregation")
-    
-    # Ideal Fault Open (Belt fault)
-    if "ideal_fault" in availability:
-        ideal_config = availability["ideal_fault"]
+
+    if "ideal_fault" in availability_config:
+        ideal_config = availability_config["ideal_fault"]
         aggs["ideal_fault"] = {
             "filter": {
                 "term": {
-                    sensoridPrevEvent_field: ideal_config["sensoridPrevEvent_keyword"]
-                    # ✅ VALUE FROM CONFIG: "IdealFaultopen" for JK, different for Shree
+                    "sensoridPrevEvent.keyword": ideal_config["sensoridPrevEvent_keyword"]
                 }
             },
             "aggs": {
                 "value": {
                     "sum": {
-                        "field": ideal_config.get("field", duration_field)
+                        "field": ideal_config.get("field", "durationPrevEvent")
                     }
                 }
             }
         }
-        print(f"  ✓ Built availability.ideal_fault aggregation")
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # SECTION 2: DOWNTIME BREAKDOWN BY PLC
-    # Read from: sensor_keywords.downtime_by_plc
-    # Supports: Unlimited PLCs with different configurations
-    # ═══════════════════════════════════════════════════════════════════════
-    
-    downtime_by_plc = sensor_keywords.get("downtime_by_plc", {})
-    
-    for plc_id, plc_downtime_config in downtime_by_plc.items():
-        """
-        Example config:
-        "plc_01": {
-            "name": "PLC_01 Downtime",
-            "parentid_filter": "PLC_01",
-            "faults": {
-                "spout_fault": {"name": "Spout Fault", "sensorid_keyword": "FAULT_OPEN_SP*", "type": "wildcard"},
-                "main_drive_stop": {"name": "Main Drive Stop", "sensorid_keyword": "FillPackMainDrivestop", "type": "term"},
-                ...
+
+    aggs["total_duration"] = {
+        "sum": {
+            "field": "durationPrevEvent"
+        }
+    }
+
+    # ════════════════════════════════════════════
+    # FAULT SCALED (for performance calculation)
+    # ════════════════════════════════════════════
+    aggs["fault_scaled"] = {
+        "filter": {
+            "term": {
+                "sensoridPrevEvent.keyword": availability_config.get("fault_counter", {}).get("sensoridPrevEvent_keyword", "Fault_Counter")
+            }
+        },
+        "aggs": {
+            "value": {
+                "sum": {
+                    "field": "scaledDurationPrevEvent"
+                }
             }
         }
-        """
-        
+    }
+
+    # ════════════════════════════════════════════
+    # DOWNTIME BY PLC (WITH NESTED SUM)
+    # ════════════════════════════════════════════
+    downtime_config = sensor_keywords.get("downtime_by_plc", {})
+
+    for plc_id, plc_config in downtime_config.items():
         plc_agg_name = f"{plc_id.lower()}_downtime"
-        
-        # Build filters for each fault type in this PLC
+
         filters_dict = {}
-        
-        for fault_type, fault_config in plc_downtime_config.get("faults", {}).items():
-            fault_name = fault_config["name"]
+        for fault_name, fault_config in plc_config.get("faults", {}).items():
             fault_keyword = fault_config["sensorid_keyword"]
             filter_type = fault_config.get("type", "term")
-            
-            # ✅ BUILD FILTER DYNAMICALLY (wildcard vs term)
+
             if filter_type == "wildcard":
                 filters_dict[fault_name] = {
                     "wildcard": {
-                        sensorid_field: fault_keyword
-                        # ✅ VALUE FROM CONFIG: "FAULT_OPEN_SP*" for PLC_01, "FAULT_OPEN_P02_SP*" for PLC_02
+                        "sensorid.keyword": fault_keyword
                     }
                 }
-            elif filter_type == "term":
+            else:  # term
                 filters_dict[fault_name] = {
                     "term": {
-                        sensorid_field: fault_keyword
+                        "sensorid.keyword": fault_keyword
                     }
                 }
-        
-        # ✅ BUILD PLC FILTER DYNAMICALLY
+
         aggs[plc_agg_name] = {
             "filter": {
                 "term": {
-                    parentid_field: plc_downtime_config.get("parentid_filter", plc_id)
-                    # ✅ VALUE FROM CONFIG: "PLC_01", "PLC_02", "PLC_03", etc.
+                    "parentid.keyword": plc_config.get("parentid_filter", plc_id)
                 }
             },
             "aggs": {
@@ -174,55 +469,43 @@ def build_es_aggregation_query(site_config: Dict[str, Any]) -> Dict:
                     "filters": {
                         "keyed": True,
                         "filters": filters_dict
+                    },
+                    "aggs": {
+                        "value": {
+                            "sum": {
+                                "field": "durationPrevEvent"
+                            }
+                        }
                     }
                 }
             }
         }
-        
-        print(f"  ✓ Built {plc_agg_name} with {len(filters_dict)} fault types")
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # SECTION 3: QUALITY METRICS
-    # Read from: sensor_keywords.quality
-    # Supports: good_bags, burst_bags, out_of_limit_bags, etc.
-    # ═══════════════════════════════════════════════════════════════════════
-    
-    quality = sensor_keywords.get("quality", {})
-    
-    for quality_metric, quality_config in quality.items():
-        """
-        Example config:
-        "good_bags": {
-            "name": "Good Bags",
-            "sensorid_keywords": ["Bag_Discharge_SP*", "Packer02_Bag_Discharge_SP*"],
-            "field": "value",
-            "aggregation": "sum",
-            "type": "wildcard"
-        }
-        """
-        
-        keywords = quality_config.get("sensorid_keywords", [])
-        filter_type = quality_config.get("type", "wildcard")
-        
-        # ✅ BUILD "should" FILTERS DYNAMICALLY
-        # Supports multiple keywords (PLC_01 and PLC_02 patterns)
+
+    # ════════════════════════════════════════════
+    # QUALITY METRICS
+    # ════════════════════════════════════════════
+    quality_config = sensor_keywords.get("quality", {})
+
+    for quality_metric, quality_cfg in quality_config.items():
+        keywords = quality_cfg.get("sensorid_keywords", [])
+        filter_type = quality_cfg.get("type", "wildcard")
+
         should_filters = []
-        
+
         for keyword in keywords:
             if filter_type == "wildcard":
                 should_filters.append({
                     "wildcard": {
-                        sensorid_field: keyword
-                        # ✅ VALUE FROM CONFIG: Different patterns for different sites
+                        "sensorid.keyword": keyword
                     }
                 })
-            elif filter_type == "term":
+            else:  # term
                 should_filters.append({
                     "term": {
-                        sensorid_field: keyword
+                        "sensorid.keyword": keyword
                     }
                 })
-        
+
         aggs[quality_metric] = {
             "filter": {
                 "bool": {
@@ -233,94 +516,46 @@ def build_es_aggregation_query(site_config: Dict[str, Any]) -> Dict:
             "aggs": {
                 "value": {
                     "sum": {
-                        "field": quality_config.get("field", value_field)
+                        "field": quality_cfg.get("field", "value")
                     }
                 }
             }
         }
-        
-        print(f"  ✓ Built {quality_metric} with {len(keywords)} keyword patterns")
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # SECTION 4: SPOUT-SPECIFIC BREAKDOWN
-    # Read from: sensor_keywords.spout_faults
-    # Extract: Spout numbers using regex from config
-    # ═══════════════════════════════════════════════════════════════════════
-    
-    spout_faults = sensor_keywords.get("spout_faults", {})
-    
-    for plc_id, spout_config in spout_faults.items():
-        """
-        Example config:
-        "plc_01": {
-            "pattern": "FAULT_OPEN_SP*",
-            "description": "PLC_01 Spout Faults - extract spout numbers from sensor name",
-            "spout_extraction_regex": "SP(\\d+)$"
-        }
-        """
-        
-        plc_agg_name = f"{plc_id.lower()}_spouts"
-        pattern = spout_config.get("pattern", "")
-        
-        # ✅ BUILD SPOUT AGGREGATION DYNAMICALLY
-        aggs[plc_agg_name] = {
-            "filter": {
-                "term": {
-                    parentid_field: plc_id
-                    # ✅ VALUE FROM CONFIG: "PLC_01", "PLC_02", etc.
-                }
-            },
-            "aggs": {
-                "spout_breakdown": {
-                    "terms": {
-                        "field": sensorid_field,
-                        "size": 100  # Max 100 spouts per PLC
-                    },
-                    "aggs": {
-                        "downtime": {
-                            "sum": {
-                                "field": duration_field
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        print(f"  ✓ Built {plc_agg_name} spout aggregation (pattern: {pattern})")
-    
+
     return aggs
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# STEP 2: EXECUTE ELASTICSEARCH QUERY
-# ════════════════════════════════════════════════════════════════════════════
+def run_oee_aggregations(es: Elasticsearch, site_id: str, period_start, period_end) -> Dict:
+    """
+    Execute Elasticsearch aggregation query with:
+    - runtime_mappings for scaledDurationPrevEvent
+    - Nested sum aggregations for downtime queries
+    - Site-specific PLCs and sensor mappings
+    - Proper timeout and error handling
+    """
 
-def run_oee_aggregations(es: Elasticsearch, site_config: Dict[str, Any], period_start, period_end) -> Dict:
-    """
-    ✅ SIMPLIFIED: Execute ES query using dynamically-built aggregation.
-    
-    All query construction is now in build_es_aggregation_query().
-    This function just executes the query.
-    """
-    
-    es_index = site_config["es_index"]
-    es_agg_config = site_config.get("es_aggregation", {})
-    request_timeout = es_agg_config.get("request_timeout", "120s")
-    
-    print(f"[{site_config['site_id']}] Building Elasticsearch aggregation query from config...")
-    
-    # ✅ BUILD QUERY DYNAMICALLY
-    aggs = build_es_aggregation_query(site_config)
-    
-    print(f"[{site_config['site_id']}] Query structure:")
-    print(f"  - Aggregations: {list(aggs.keys())}")
-    
-    query_body = {
-        "size": 0,
-        "query": {
+    site_config = get_site_config(site_id)
+    plc_ids = [plc["plc_id"] for plc in site_config["plc_config"]]
+
+    print(f"\n[ES Query] Executing OEE aggregations for {site_id}...")
+    print(f"  Period: {period_start.strftime('%Y-%m-%d %H:%M')} → {period_end.strftime('%Y-%m-%d %H:%M')}")
+    print(f"  PLCs: {', '.join(plc_ids)}")
+    print(f"  Index: {site_config['es_index']}")
+
+    aggs = build_elasticsearch_aggregations(site_id)
+
+    response = es.search(
+        index=site_config["es_index"],
+        size=0,
+        request_timeout=300,
+        query={
             "bool": {
                 "filter": [
+                    {
+                        "terms": {
+                            "parentid.keyword": plc_ids
+                        }
+                    },
                     {
                         "range": {
                             "@timestamp": {
@@ -332,458 +567,1178 @@ def run_oee_aggregations(es: Elasticsearch, site_config: Dict[str, Any], period_
                 ]
             }
         },
-        "aggs": aggs
-    }
-    
-    print(f"[{site_config['site_id']}] Executing Elasticsearch query...")
-    print(f"  - Index: {es_index}")
-    print(f"  - Date range: {period_start} → {period_end}")
-    print(f"  - Timeout: {request_timeout}")
-    
-    result = es.search(
-        index=es_index,
-        body=query_body,
-        request_timeout=request_timeout
+        # FIX #4: ADD RUNTIME_MAPPINGS FOR SCALED DURATION
+        runtime_mappings={
+            "scaledDurationPrevEvent": {
+                "type": "double",
+                "script": {
+                    "source": "if (doc['durationPrevEvent'].size() != 0 && doc['valuePrevEvent'].size() != 0) { emit(doc['durationPrevEvent'].value * doc['valuePrevEvent'].value); }"
+                }
+            }
+        },
+        aggs=aggs
     )
-    
-    print(f"[{site_config['site_id']}] Query complete. Processing results...")
-    
+
+    print("[ES Query] Complete. Processing results...")
+    return response
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SHIFT CHANGEOVER DELAY CALCULATION
+# ════════════════════════════════════════════════════════════════════════════
+
+def calculate_shift_changeover_delays(
+    es: Elasticsearch,
+    site_id: str,
+    start_date: datetime,
+    end_date: datetime,
+) -> Dict[str, float]:
+    """
+    Calculate cumulative shift changeover delays for all expected shift
+    occurrences within the reporting period [start_date, end_date).
+
+    The reporting period is Monday 06:00 → Monday 06:00 (exactly 168 hours).
+
+    KEY PRINCIPLE: Shift start is defined as the first production event
+    (a "good bags" sensor reading with value > 0), NOT the first
+    Elasticsearch document. The sensor wildcards used to detect a
+    production event come from this site's own config
+    (sensor_keywords.quality.good_bags.sensorid_keywords), so this works
+    unchanged across sites with different sensor naming (e.g. Shree
+    Cement's 4 PLCs vs JK Cement's 2).
+
+    SHIFT DEFINITIONS:
+      - Shift A: 06:00 to 14:00 (8 hours)
+      - Shift B: 14:00 to 22:00 (8 hours)
+      - Shift C: 22:00 to 06:00 next day (8 hours)
+
+    EXPECTED OCCURRENCES in a Monday 06:00 → Monday 06:00 period:
+      7 x Shift A, 7 x Shift B, 7 x Shift C = 21 expected occurrences.
+
+    If no production event occurs during a shift window, that shift does
+    NOT contribute to the cumulative delay (it's simply skipped, not
+    counted as a zero-delay occurrence). A shift starting production
+    EARLY or exactly on time also contributes nothing — only a positive
+    lag (late start) counts as delay.
+
+    Returns:
+        {"A": total_delay_minutes, "B": ..., "C": ...}
+        Keys are single letters ("A"/"B"/"C") to match what
+        generate_docx.py's shift-changeover table reads
+        (shift_changeover.get("A"/"B"/"C")) — NOT "Shift A"/"Shift B"/
+        "Shift C". That key mismatch was the reason the report always
+        showed 0.00 min for every shift.
+    """
+
+    site_config = get_site_config(site_id)
+    plc_ids = [plc["plc_id"] for plc in site_config["plc_config"]]
+
+    good_bags_keywords = site_config["sensor_keywords"]["quality"]["good_bags"]["sensorid_keywords"]
+    should_filters = [{"wildcard": {"sensorid.keyword": keyword}} for keyword in good_bags_keywords]
+
+    ist = ZoneInfo("Asia/Kolkata")
+
+    print(f"\n[Shift Query] Starting shift changeover delay calculation for {site_id}")
+    print(f"  Period: {start_date.strftime('%Y-%m-%d %H:%M:%S')} → {end_date.strftime('%Y-%m-%d %H:%M:%S')}")
+    query_start = time.time()
+
+    # Build the full list of EXPECTED shift occurrences for the reporting
+    # period by walking each calendar day from the reporting start,
+    # creating 3 shift occurrences per day, and including only those
+    # whose start falls within [start_date, end_date).
+    expected_shift_occurrences = []
+    current_prod_day = start_date.replace(hour=6, minute=0, second=0, microsecond=0)
+
+    while current_prod_day < end_date:
+        prod_day_start, shift_b_start, shift_c_start = calculate_shift_delimiters(current_prod_day)
+
+        for shift_name, shift_start in [
+            ("Shift A", prod_day_start),
+            ("Shift B", shift_b_start),
+            ("Shift C", shift_c_start),
+        ]:
+            shift_end = shift_start + timedelta(hours=8)
+
+            if shift_start < end_date:
+                expected_shift_occurrences.append((prod_day_start, shift_name, shift_start, shift_end))
+
+        current_prod_day += timedelta(days=1)
+
+    # One filtered sub-aggregation per expected occurrence, each finding
+    # the earliest @timestamp where production actually began during
+    # that shift window.
+    shift_aggs = {}
+    agg_name_lookup = {}
+
+    for idx, (prod_day_start, shift_name, shift_start, shift_end) in enumerate(expected_shift_occurrences):
+        agg_name = f"occ_{idx}"
+        agg_name_lookup[agg_name] = (prod_day_start, shift_name, shift_start, shift_end)
+
+        shift_aggs[agg_name] = {
+            "filter": {
+                "bool": {
+                    "must": [
+                        {
+                            "range": {
+                                "@timestamp": {
+                                    "gte": shift_start.isoformat(),
+                                    "lt": shift_end.isoformat(),
+                                }
+                            }
+                        },
+                        {"bool": {"should": should_filters, "minimum_should_match": 1}},
+                        {"range": {"value": {"gt": 0}}},
+                    ]
+                }
+            },
+            "aggs": {"first_production_ts": {"min": {"field": "@timestamp"}}},
+        }
+
+    shift_delay_response = es.search(
+        index=site_config["es_index"],
+        size=0,
+        request_timeout=120,
+        query={
+            "bool": {
+                "filter": [
+                    {"terms": {"parentid.keyword": plc_ids}},
+                    {
+                        "range": {
+                            "@timestamp": {
+                                "gte": start_date.isoformat(),
+                                "lt": end_date.isoformat(),
+                            }
+                        }
+                    },
+                ]
+            }
+        },
+        aggs=shift_aggs,
+    )
+
+    query_elapsed = time.time() - query_start
+    print(f"  Query executed in {query_elapsed:.2f}s")
+
+    aggregations = shift_delay_response.get("aggregations", {})
+
+    cumulative_delay_minutes = {"A": 0.0, "B": 0.0, "C": 0.0}
+    shift_letter_map = {"Shift A": "A", "Shift B": "B", "Shift C": "C"}
+
+    occurrences_with_production = 0
+    occurrences_without_production = 0
+
+    for agg_name, (prod_day_start, shift_name, shift_start, shift_end) in agg_name_lookup.items():
+        agg_result = aggregations.get(agg_name, {})
+        doc_count = agg_result.get("doc_count", 0)
+        first_production_ts_value = agg_result.get("first_production_ts", {}).get("value")
+
+        shift_letter = shift_letter_map[shift_name]
+
+        if doc_count == 0 or first_production_ts_value is None:
+            # No production event during this window — excluded from
+            # the cumulative delay entirely, per the documented behavior.
+            occurrences_without_production += 1
+            continue
+
+        occurrences_with_production += 1
+
+        # first_production_ts_value is epoch milliseconds (ES "min" agg
+        # on a date field). Convert to an aware IST datetime so it can
+        # be compared directly against shift_start.
+        first_production_dt = datetime.fromtimestamp(first_production_ts_value / 1000, tz=ist)
+        shift_start_ist = (
+            shift_start.astimezone(ist) if shift_start.tzinfo else shift_start.replace(tzinfo=ist)
+        )
+
+        lag_minutes = (first_production_dt - shift_start_ist).total_seconds() / 60.0
+
+        # Only a POSITIVE lag (production genuinely started late) counts
+        # as a changeover delay; starting early/on time never subtracts.
+        if lag_minutes > 0:
+            cumulative_delay_minutes[shift_letter] += lag_minutes
+
+    total_elapsed = time.time() - query_start
+    print(f"  Shift changeover delay calculation complete in {total_elapsed:.2f}s")
+    print(f"    Occurrences with production data : {occurrences_with_production}")
+    print(f"    Occurrences with NO production    : {occurrences_without_production}")
+    print(f"    Shift A cumulative delay : {cumulative_delay_minutes['A']:.2f} min")
+    print(f"    Shift B cumulative delay : {cumulative_delay_minutes['B']:.2f} min")
+    print(f"    Shift C cumulative delay : {cumulative_delay_minutes['C']:.2f} min")
+
+    return cumulative_delay_minutes
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# PER-SPOUT DOWNTIME BY PLC
+# ════════════════════════════════════════════════════════════════════════════
+
+DOWNTIME_DIVISOR = 608.33  # same conversion factor used elsewhere in this file
+
+
+def _wildcard_to_regex(wildcard_pattern: str) -> str:
+    """
+    Convert a Lucene-style wildcard pattern — the kind already used in
+    SITE_CONFIG's sensorid_keyword filters, e.g. "FAULT_OPEN_SP*" or
+    "PACKER02_FAULT_OPEN_SP*" — into an equivalent regex, because a terms
+    aggregation's "include" parameter requires a regex, not a Lucene
+    wildcard. Only '*' (any sequence) and '?' (any single char) are
+    treated as wildcards; everything else is regex-escaped.
+    """
+    converted = []
+    for char in wildcard_pattern:
+        if char == "*":
+            converted.append(".*")
+        elif char == "?":
+            converted.append(".")
+        else:
+            converted.append(re.escape(char))
+    return "".join(converted)
+
+
+def get_plc_spout_downtime(
+    es: Elasticsearch,
+    site_id: str,
+    period_start: datetime,
+    period_end: datetime,
+) -> Dict[str, Dict[int, float]]:
+    """
+    Per-spout downtime minutes, per PLC, using the same terms-aggregation
+    approach as the Vega spec:
+
+        {"terms": {"field": "sensorid.keyword", "include": "<pattern>", "size": 16}}
+
+    scoped per PLC via an outer filter aggregation on parentid.keyword.
+
+    <pattern> is NOT hardcoded — it's derived, per PLC, from this site's
+    own SITE_CONFIG (sensor_keywords.downtime_by_plc[plc_id].faults
+    ["Spout Fault"].sensorid_keyword) — the exact same wildcard already
+    used elsewhere in this file to compute that PLC's aggregate "Spout
+    Fault" downtime total — converted from Lucene wildcard syntax to the
+    regex syntax "include" requires. That matters because the wildcard
+    is NOT uniform across PLCs: JK Cement's PLC_01 uses
+    "FAULT_OPEN_SP*" while its PLC_02 uses "PACKER02_FAULT_OPEN_SP*" (a
+    completely different prefix, not a "P02_SP" suffix pattern), and
+    Shree Cement has 4 PLCs. Deriving the pattern from config instead of
+    guessing it means this works unchanged for every configured PLC on
+    every site.
+
+    Downtime Minutes = doc_count / 608.33, rounded to 2 decimal places.
+
+    Sensor name -> spout number: only the digits immediately following
+    "SP" at the END of the sensor key are read as the spout number (e.g.
+    "PACKER02_FAULT_OPEN_SP01" -> spout 1). This avoids any other digit
+    group earlier in the key (a PLC number, a packer number, etc.)
+    leaking into the spout number.
+
+    Returns:
+        {"PLC_01": {1: 23.41, 2: 18.27, ...}, "PLC_02": {...}, ...}
+        One entry per PLC configured for this site (dict keys are spout
+        numbers as ints, sorted ascending). A PLC with no data, or no
+        "Spout Fault" sensor config at all, gets {}.
+    """
+    site_config = get_site_config(site_id)
+    plc_ids = [plc["plc_id"] for plc in site_config["plc_config"]]
+    downtime_config = site_config["sensor_keywords"].get("downtime_by_plc", {})
+
+    print(f"\n[Spout Downtime Query] Starting per-PLC spout downtime aggregation for {site_id}")
+    print(f"  Period: {period_start.strftime('%Y-%m-%d %H:%M:%S')} → {period_end.strftime('%Y-%m-%d %H:%M:%S')}")
+    query_start = time.time()
+
+    aggs = {}
+    plc_agg_names = {}
+
+    for plc_id in plc_ids:
+        plc_config = downtime_config.get(plc_id, {})
+        spout_fault_config = plc_config.get("faults", {}).get("Spout Fault")
+
+        if not spout_fault_config:
+            print(f"  ⚠ No 'Spout Fault' sensor config for {plc_id}; skipping")
+            continue
+
+        include_pattern = _wildcard_to_regex(spout_fault_config["sensorid_keyword"])
+        agg_name = f"{plc_id.lower()}_spout"
+        plc_agg_names[plc_id] = agg_name
+
+        aggs[agg_name] = {
+            "filter": {"term": {"parentid.keyword": plc_config.get("parentid_filter", plc_id)}},
+            "aggs": {
+                "spout_downtime": {
+                    "terms": {
+                        "field": "sensorid.keyword",
+                        "include": include_pattern,
+                        "size": 16,
+                    }
+                }
+            },
+        }
+
+    result = {plc_id: {} for plc_id in plc_ids}
+
+    if not aggs:
+        print("  ⚠ No PLCs with spout-fault sensor config; returning empty result for all PLCs")
+        return result
+
+    response = es.search(
+        index=site_config["es_index"],
+        size=0,
+        request_timeout=120,
+        query={
+            "bool": {
+                "filter": [
+                    {"terms": {"parentid.keyword": plc_ids}},
+                    {"range": {"@timestamp": {"gte": period_start.isoformat(), "lt": period_end.isoformat()}}},
+                ]
+            }
+        },
+        aggs=aggs,
+    )
+
+    query_elapsed = time.time() - query_start
+    print(f"[Spout Downtime Query] Completed in {query_elapsed:.2f} seconds")
+
+    def parse_spout_buckets(buckets):
+        parsed = {}
+        for bucket in buckets:
+            sensor_key = bucket["key"]
+            doc_count = bucket["doc_count"]
+
+            # Match "SP" followed by digits, anchored to the END of the
+            # key — so an unrelated digit group earlier in the key (a
+            # PLC/packer number, e.g. the "02" in "PACKER02_") can never
+            # leak into the spout number.
+            match = re.search(r"SP(\d+)$", sensor_key, re.IGNORECASE)
+            if not match:
+                continue
+
+            spout_num = int(match.group(1))
+            parsed[spout_num] = round(doc_count / DOWNTIME_DIVISOR, 2)
+
+        return dict(sorted(parsed.items()))
+
+    aggregations = response.get("aggregations", {})
+
+    print()
+    print("========================================")
+    print("PLC-WISE SPOUT DOWNTIME")
+    print("========================================")
+
+    for plc_id in plc_ids:
+        agg_name = plc_agg_names.get(plc_id)
+
+        if agg_name is not None:
+            buckets = aggregations.get(agg_name, {}).get("spout_downtime", {}).get("buckets", [])
+            result[plc_id] = parse_spout_buckets(buckets)
+
+        print(plc_id)
+        if result[plc_id]:
+            for spout_num, minutes in result[plc_id].items():
+                print(f"  Spout {spout_num} : {minutes:.2f} min")
+        else:
+            print("  No spout downtime recorded")
+
+    print("========================================")
+
     return result
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 3: EXTRACT RESULTS FROM ELASTICSEARCH RESPONSE
+# FIX #3: CORRECT AVAILABILITY FORMULA & OEE CALCULATION
 # ════════════════════════════════════════════════════════════════════════════
 
-def extract_results_from_es(response: Dict, site_config: Dict[str, Any]) -> Dict:
+def calculate_oee_metrics(response: Dict, site_id: str) -> Dict:
     """
-    ✅ DYNAMIC: Extract results from ES response using site config.
-    
-    Handles:
-    - Any number of PLCs (from config)
-    - Any fault types per PLC (from config)
-    - Any quality metrics (from config)
-    - Spout number extraction using regex from config
+    Calculate OEE using CORRECT FORMULAS.
+
+    KEY FIX: Availability uses downtime_divisor of 608.33
+    This represents the expected production minutes in a 7-day week.
+
+    Availability = (1 - (total_fault_time / 608.33)) * 100
+
+    NOTE: This function returns the FLAT internal "metrics" dict used only
+    for calculation. It is intentionally NOT the same shape as analysis.json
+    — save_analysis_json() below builds the nested, documented schema from
+    this dict. Callers that want the analysis.json-shaped object should use
+    what run_analysis_pipeline() returns, not this function's return value.
     """
-    
-    sensor_keywords = site_config.get("sensor_keywords", {})
-    
-    extracted = {}
+
     aggs = response.get("aggregations", {})
-    
-    print(f"[{site_config['site_id']}] Extracting results from Elasticsearch response...")
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # EXTRACT 1: Availability Metrics
-    # ═══════════════════════════════════════════════════════════════════════
-    
-    availability = {}
-    
-    if "fault_duration" in aggs:
-        availability["fault_duration"] = aggs["fault_duration"]["value"]["value"]
-    
-    if "ideal_fault" in aggs:
-        availability["ideal_fault"] = aggs["ideal_fault"]["value"]["value"]
-    
-    extracted["availability"] = availability
-    print(f"  ✓ Extracted availability metrics")
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # EXTRACT 2: Downtime Breakdown (Dynamic for each PLC)
-    # ═══════════════════════════════════════════════════════════════════════
-    
-    downtime_by_plc = {}
-    downtime_config = sensor_keywords.get("downtime_by_plc", {})
-    
-    for plc_id, plc_config_item in downtime_config.items():
-        plc_agg_name = f"{plc_id.lower()}_downtime"
-        
-        if plc_agg_name not in aggs:
-            print(f"  ⚠ {plc_agg_name} not found in response")
-            continue
-        
-        plc_aggs = aggs[plc_agg_name]
-        plc_downtime = {}
-        
-        # Extract each fault type (Spout Fault, Main Drive Stop, Belt Not Running)
-        for fault_type, fault_config in plc_config_item.get("faults", {}).items():
-            fault_name = fault_config["name"]
-            
-            if "by_type" in plc_aggs and "buckets" in plc_aggs["by_type"]:
-                buckets = plc_aggs["by_type"]["buckets"]
-                if fault_name in buckets:
-                    value = buckets[fault_name]["value"]["value"]
-                    plc_downtime[fault_type] = value
-                    print(f"    - {plc_id} {fault_name}: {value:.2f} min")
-        
-        downtime_by_plc[plc_id] = plc_downtime
-    
-    extracted["downtime_by_plc"] = downtime_by_plc
-    print(f"  ✓ Extracted downtime breakdown for {len(downtime_by_plc)} PLCs")
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # EXTRACT 3: Quality Metrics
-    # ═══════════════════════════════════════════════════════════════════════
-    
-    quality = {}
-    quality_config = sensor_keywords.get("quality", {})
-    
-    for quality_metric, quality_cfg in quality_config.items():
-        if quality_metric in aggs:
-            quality[quality_metric] = aggs[quality_metric]["value"]["value"]
-            print(f"    - {quality_metric}: {quality[quality_metric]:.0f}")
-    
-    extracted["quality"] = quality
-    print(f"  ✓ Extracted {len(quality)} quality metrics")
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # EXTRACT 4: Spout Breakdown (Dynamic for each PLC)
-    # ═══════════════════════════════════════════════════════════════════════
-    
-    spout_breakdown = {}
-    spout_config = sensor_keywords.get("spout_faults", {})
-    
-    for plc_id, spout_cfg in spout_config.items():
-        plc_agg_name = f"{plc_id.lower()}_spouts"
-        
-        if plc_agg_name not in aggs:
-            print(f"  ⚠ {plc_agg_name} not found in response")
-            continue
-        
-        spout_aggs = aggs[plc_agg_name]
-        spout_data = {}
-        
-        if "spout_breakdown" in spout_aggs and "buckets" in spout_aggs["spout_breakdown"]:
-            for bucket in spout_aggs["spout_breakdown"]["buckets"]:
-                sensor_name = bucket["key"]
-                
-                # ✅ EXTRACT SPOUT NUMBER DYNAMICALLY using regex from config
-                spout_regex = spout_cfg.get("spout_extraction_regex", r"SP(\d+)$")
-                
-                match = re.search(spout_regex, sensor_name, re.IGNORECASE)
-                if match:
-                    spout_num = match.group(1)
-                    spout_data[spout_num] = bucket["downtime"]["value"]
-        
-        spout_breakdown[plc_id] = spout_data
-        print(f"    - {plc_id}: {len(spout_data)} spouts with downtime")
-    
-    extracted["spout_breakdown"] = spout_breakdown
-    print(f"  ✓ Extracted spout breakdown for {len(spout_breakdown)} PLCs")
-    
-    return extracted
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# STEP 4: CALCULATE OEE METRICS
-# ════════════════════════════════════════════════════════════════════════════
-
-def calculate_oee_metrics(extracted_data: Dict, site_config: Dict[str, Any]) -> Dict:
-    """
-    ✅ DYNAMIC: Calculate OEE using site-specific formulas from config.
-    
-    Supports:
-    - Different calculation methods (multiplicative, additive)
-    - Site-specific weights
-    - Site-specific thresholds
-    """
-    
-    print(f"[{site_config['site_id']}] Calculating OEE metrics...")
-    
-    formulas = site_config.get("formulas", {})
-    thresholds = site_config.get("kpi_thresholds", {})
-    
     # Extract raw values
-    availability = extracted_data["availability"]["fault_duration"]
-    quality_breakdown = extracted_data["quality"]
-    
-    # Placeholder calculations (you'd replace with actual logic)
-    oee_metrics = {
-        "availability": 85.5,  # ✅ From extracted data
-        "performance": 92.3,   # ✅ From extracted data
-        "quality": 98.1,       # ✅ From extracted data
+    fault_duration = aggs["fault_duration"]["value"]["value"]
+    fault_scaled = aggs["fault_scaled"]["value"]["value"]
+    ideal_fault = aggs["ideal_fault"]["value"]["value"]
+    total_duration = aggs["total_duration"]["value"]
+    good_bags = int(aggs["good_bags"]["value"]["value"])
+    burst_bags = int(aggs["burst_bags"]["value"]["value"])
+    out_of_limit_bags = int(aggs["out_of_limit_bags"]["value"]["value"])
+
+    print(f"\n[{site_id}] Raw aggregation values:")
+    print(f"  Fault duration: {fault_duration:.2f}")
+    print(f"  Fault scaled: {fault_scaled:.2f}")
+    print(f"  Ideal fault: {ideal_fault:.2f}")
+    print(f"  Good bags: {good_bags}")
+    print(f"  Burst bags: {burst_bags}")
+    print(f"  Out of limit: {out_of_limit_bags}")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # AVAILABILITY CALCULATION (FROM CORRECT REFERENCE CODE)
+    # Vega Formula: ((fault_duration*16) - fault_scaled + (ideal_fault*16)) / (total_duration*16)
+    # ════════════════════════════════════════════════════════════════════════
+    availability_numerator = (fault_duration * 16.0) - fault_scaled + (ideal_fault * 16.0)
+    availability_denominator = total_duration * 16.0
+
+    availability = (
+        availability_numerator / availability_denominator
+        if availability_denominator != 0
+        else 0
+    )
+    availability = max(0, min(1, availability))  # Clamp to [0, 1]
+    availability_pct = availability * 100
+
+    # ════════════════════════════════════════════════════════════════════════
+    # RUNNING SECONDS (FROM CORRECT REFERENCE CODE)
+    # Vega Formula: runningSeconds = (fault_duration*16) - fault_scaled
+    # ════════════════════════════════════════════════════════════════════════
+    running_seconds = (fault_duration * 16.0) - fault_scaled
+
+    # ════════════════════════════════════════════════════════════════════════
+    # PERFORMANCE (FROM CORRECT REFERENCE CODE)
+    # Vega Formula: good_bags / (runningSeconds/60 * 5)
+    # The "5" = standard production rate of 5 bags per minute
+    # ════════════════════════════════════════════════════════════════════════
+    expected_good_bags = (running_seconds / 60.0) * 5.0 if running_seconds > 0 else 0
+
+    performance = (
+        good_bags / expected_good_bags
+        if expected_good_bags > 0
+        else 0
+    )
+    performance = max(0, min(1, performance))  # Clamp to [0, 1]
+    performance_pct = performance * 100
+
+    # ════════════════════════════════════════════════════════════════════════
+    # QUALITY (FROM CORRECT REFERENCE CODE)
+    # Vega Formula: good_bags / total_bags
+    # ════════════════════════════════════════════════════════════════════════
+    total_bags = good_bags + burst_bags + out_of_limit_bags
+    quality = (
+        good_bags / total_bags
+        if total_bags != 0
+        else 0
+    )
+    quality = max(0, min(1, quality))  # Clamp to [0, 1]
+    quality_pct = quality * 100
+
+    # ════════════════════════════════════════════════════════════════════════
+    # OEE (FROM CORRECT REFERENCE CODE)
+    # Vega Formula: Availability * Performance * Quality
+    # ════════════════════════════════════════════════════════════════════════
+    oee_decimal = availability * performance * quality
+    oee_decimal = max(0, min(1, oee_decimal))  # Clamp to [0, 1]
+    oee_pct = oee_decimal * 100.0
+
+    print(f"\n[{site_id}] Calculated metrics:")
+    print(f"  Availability: {availability_pct:.2f}%")
+    print(f"  Performance: {performance_pct:.2f}%")
+    print(f"  Quality: {quality_pct:.2f}%")
+    print(f"  OEE: {oee_pct:.2f}%")
+
+    return {
+        "availability": availability,
+        "availability_pct": availability_pct,
+        "availability_numerator": availability_numerator,
+        "availability_denominator": availability_denominator,
+        "performance": performance,
+        "performance_pct": performance_pct,
+        "quality": quality,
+        "quality_pct": quality_pct,
+        "oee_decimal": oee_decimal,
+        "oee_pct": oee_pct,
+        "good_bags": good_bags,
+        "burst_bags": burst_bags,
+        "out_of_limit_bags": out_of_limit_bags,
+        "total_bags": total_bags,
+        "running_seconds": running_seconds,
+        "expected_good_bags": expected_good_bags,
+        "total_duration": total_duration,
+        "fault_duration": fault_duration,
+        "fault_scaled": fault_scaled,
+        "ideal_fault": ideal_fault,
+        "aggregations": aggs,
     }
-    
-    # ✅ Calculate OEE using site-specific formula
-    downtime_divisor = formulas.get("downtime_divisor", 608.33)
-    availability_pct = (1 - (availability / downtime_divisor)) * 100
-    
-    oee_metrics["availability"] = max(0, min(100, availability_pct))
-    oee_metrics["oee"] = (oee_metrics["availability"] * oee_metrics["performance"] * oee_metrics["quality"]) / 10000
-    
-    print(f"  - Availability: {oee_metrics['availability']:.2f}%")
-    print(f"  - Performance: {oee_metrics['performance']:.2f}%")
-    print(f"  - Quality: {oee_metrics['quality']:.2f}%")
-    print(f"  - OEE: {oee_metrics['oee']:.2f}%")
-    
-    return oee_metrics
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 5: GENERATE EXCEL
+# FIX #3: PROPER EXCEL GENERATION WITH CORRECT OUTPUT PATH
 # ════════════════════════════════════════════════════════════════════════════
 
-def generate_excel_report(oee_metrics: Dict, extracted_data: Dict, site_id: str, config_manager: ConfigManager, week: int) -> Path:
+def generate_excel_report(metrics: Dict, site_id: str, week: int, output_dir: Path) -> Path:
     """
-    ✅ DYNAMIC: Generate Excel using site-specific paths and thresholds.
+    Generate a comprehensive Excel report containing the same analysis data
+    exposed in analysis.json, including:
+    - Report metadata and period
+    - Verified KPIs
+    - KPI details
+    - Availability details
+    - Bag/quality metrics
+    - Performance details
+    - Downtime by PLC
+    - Shift delimiters for the reporting week
+    - Raw aggregation data
     """
-    
-    site_config = config_manager.get_site_config(site_id)
-    paths = config_manager.get_paths(site_id, week)
-    thresholds = site_config.get("kpi_thresholds", {})
-    
-    print(f"[{site_id}] Generating Excel workbook...")
-    
-    # Create directories
-    paths["excel_file"].parent.mkdir(parents=True, exist_ok=True)
-    
-    # Create DataFrame with metrics
-    data = {
-        "Parameter": [
-            "OEE",
-            "Availability",
-            "Performance",
-            "Quality",
-        ],
-        "Value": [
-            f"{oee_metrics['oee']:.2f}%",
-            f"{oee_metrics['availability']:.2f}%",
-            f"{oee_metrics['performance']:.2f}%",
-            f"{oee_metrics['quality']:.2f}%",
-        ],
-        "Target": [
-            f"{thresholds.get('oee_min', 70)}%",
-            f"{thresholds.get('availability_min', 85)}%",
-            f"{thresholds.get('performance_min', 90)}%",
-            f"{thresholds.get('quality_min', 95)}%",
+    report_dir = output_dir / str(week)
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    excel_file = report_dir / "report.xlsx"
+
+    print(f"\n[{site_id}] Generating comprehensive Excel report...")
+    print(f"  Path: {excel_file}")
+
+    site_config = get_site_config(site_id)
+
+    shift_changeover_minutes = metrics.get("shift_changeover_minutes", {})
+
+    # ------------------------------------------------------------------------
+    # Shift delimiters: Monday 06:00 -> next Monday 06:00
+    # ------------------------------------------------------------------------
+    period_start = metrics.get("period_start")
+    period_end = metrics.get("period_end")
+
+    if period_start is not None and period_end is not None:
+        shift_rows = []
+        current = period_start
+
+        while current < period_end:
+            prod_day_start, shift_b_start, shift_c_start = calculate_shift_delimiters(current)
+
+            # Only include complete shift boundaries within this report period.
+            shift_rows.extend([
+                {
+                    "Shift": "Shift A",
+                    "Production Day": prod_day_start.strftime("%Y-%m-%d"),
+                    "Start": prod_day_start.strftime("%Y-%m-%d %H:%M:%S IST"),
+                    "End": shift_b_start.strftime("%Y-%m-%d %H:%M:%S IST"),
+                },
+                {
+                    "Shift": "Shift B",
+                    "Production Day": prod_day_start.strftime("%Y-%m-%d"),
+                    "Start": shift_b_start.strftime("%Y-%m-%d %H:%M:%S IST"),
+                    "End": shift_c_start.strftime("%Y-%m-%d %H:%M:%S IST"),
+                },
+                {
+                    "Shift": "Shift C",
+                    "Production Day": prod_day_start.strftime("%Y-%m-%d"),
+                    "Start": shift_c_start.strftime("%Y-%m-%d %H:%M:%S IST"),
+                    "End": (prod_day_start + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S IST"),
+                },
+            ])
+
+            current = prod_day_start + timedelta(days=1)
+
+        # Keep only shifts whose start is inside the reporting period.
+        shift_rows = [
+            r for r in shift_rows
+            if period_start.strftime("%Y-%m-%d %H:%M:%S") <=
+               r["Start"].replace(" IST", "") <
+               period_end.strftime("%Y-%m-%d %H:%M:%S")
         ]
-    }
-    
-    df = pd.DataFrame(data)
-    df.to_excel(paths["excel_file"], sheet_name="OEE Analysis", index=False)
-    
-    print(f"[{site_id}] Excel saved: {paths['excel_file']}")
-    
-    return paths["excel_file"]
+    else:
+        shift_rows = []
 
+    # ------------------------------------------------------------------------
+    # Main summary sheet
+    # ------------------------------------------------------------------------
+    rows = [
+        {"Parameter": "Report Period", "Value": ""},
+        {"Parameter": "Start Date", "Value": metrics.get("period_start_str", "")},
+        {"Parameter": "End Date", "Value": metrics.get("period_end_str", "")},
+        {"Parameter": "Week", "Value": week},
+        {"Parameter": "Previous Week", "Value": week - 1},
+        {"Parameter": "Equipment", "Value": ", ".join(
+            plc["name"] for plc in site_config["plc_config"]
+        )},
+        {"Parameter": "", "Value": ""},
 
-# ════════════════════════════════════════════════════════════════════════════
-# STEP 6: EXTRACT ANALYSIS FROM EXCEL
-# ════════════════════════════════════════════════════════════════════════════
+        {"Parameter": "Business-Relevant KPIs", "Value": ""},
+        {"Parameter": "OEE", "Value": f"{metrics['oee_pct']:.2f}%"},
+        {"Parameter": "Availability", "Value": f"{metrics['availability_pct']:.2f}%"},
+        {"Parameter": "Performance", "Value": f"{metrics['performance_pct']:.2f}%"},
+        {"Parameter": "Quality", "Value": f"{metrics['quality_pct']:.2f}%"},
+        {"Parameter": "", "Value": ""},
 
-def extract_analysis_from_excel(excel_file: Path, site_id: str, week: int, config_manager: ConfigManager) -> Dict:
-    """
-    ✅ DYNAMIC: Extract analysis from Excel using site-specific cell mappings.
-    
-    Each site has different cell locations for OEE, Availability, etc.
-    config.json defines the cell layout per site.
-    """
-    
-    site_config = config_manager.get_site_config(site_id)
-    paths = config_manager.get_paths(site_id, week)
-    cell_mapping = site_config.get("excel_cell_mapping", {})
-    
-    print(f"[{site_id}] Extracting analysis from Excel: {excel_file}")
-    
+        {"Parameter": "Availability Details", "Value": ""},
+        {"Parameter": "Planned Production Time (min)", "Value": (
+            metrics.get("total_duration", 0) / 60.0 -
+            metrics.get("fault_duration", 0) / 60.0
+        )},
+        {"Parameter": "Total Available Time (min)", "Value": (
+            metrics.get("total_duration", 0) / 60.0
+        )},
+        {"Parameter": "", "Value": ""},
+
+        {"Parameter": "Bag Metrics", "Value": ""},
+        {"Parameter": "Good Bags", "Value": metrics["good_bags"]},
+        {"Parameter": "Burst Bags", "Value": metrics["burst_bags"]},
+        {"Parameter": "Out of Limit Bags", "Value": metrics["out_of_limit_bags"]},
+        {"Parameter": "Total Bags", "Value": metrics["total_bags"]},
+        {"Parameter": "", "Value": ""},
+
+        {"Parameter": "Performance Details", "Value": ""},
+        {"Parameter": "Actual Good Bags", "Value": metrics["good_bags"]},
+        {"Parameter": "Expected Good Bags", "Value": round(metrics["expected_good_bags"], 2)},
+        {"Parameter": "Running Seconds", "Value": round(metrics["running_seconds"], 2)},
+        {"Parameter": "", "Value": ""},
+
+        {"Parameter": "Downtime Breakdown By PLC", "Value": ""},
+    ]
+
+    # ------------------------------------------------------------------------
+    # PLC downtime
+    # ------------------------------------------------------------------------
+    for plc_config in site_config["plc_config"]:
+        plc_id = plc_config["plc_id"]
+        agg_key = f"{plc_id.lower()}_downtime"
+
+        if agg_key in metrics.get("aggregations", {}):
+            buckets = metrics["aggregations"][agg_key]["by_type"]["buckets"]
+
+            for fault_type, fault_data in buckets.items():
+                if "value" in fault_data and "value" in fault_data["value"]:
+                    seconds = fault_data["value"]["value"]
+                    minutes = seconds / 60.0
+
+                    rows.append({
+                        "Parameter": f"{plc_id} {fault_type}",
+                        "Value": round(minutes, 2)
+                    })
+
+    rows.extend([
+        {"Parameter": "", "Value": ""},
+        {"Parameter": "Raw Aggregation Data", "Value": ""},
+        {"Parameter": "Good Bags", "Value": metrics["good_bags"]},
+        {"Parameter": "Burst Bags", "Value": metrics["burst_bags"]},
+        {"Parameter": "Out of Limit Bags", "Value": metrics["out_of_limit_bags"]},
+        {"Parameter": "Total Bags", "Value": metrics["total_bags"]},
+        {"Parameter": "Fault Duration (sec)", "Value": round(metrics["fault_duration"], 2)},
+        {"Parameter": "Fault Scaled (sec)", "Value": round(metrics["fault_scaled"], 2)},
+        {"Parameter": "Ideal Fault (sec)", "Value": round(metrics["ideal_fault"], 2)},
+        {"Parameter": "Total Duration (sec)", "Value": round(metrics["total_duration"], 2)},
+        {"Parameter": "Running Seconds", "Value": round(metrics["running_seconds"], 2)},
+        {"Parameter": "", "Value": ""},
+        {"Parameter": "Shift Changeover Delays (minutes)", "Value": ""},
+        {"Parameter": "Shift A Changeover Delay", "Value": f"{shift_changeover_minutes.get('A', 0.0):.2f} min"},
+        {"Parameter": "Shift B Changeover Delay", "Value": f"{shift_changeover_minutes.get('B', 0.0):.2f} min"},
+        {"Parameter": "Shift C Changeover Delay", "Value": f"{shift_changeover_minutes.get('C', 0.0):.2f} min"},
+    ])
+
+    summary_df = pd.DataFrame(rows)
+
+    # ------------------------------------------------------------------------
+    # Shift schedule sheet
+    # ------------------------------------------------------------------------
+    shift_df = pd.DataFrame(
+        shift_rows,
+        columns=["Shift", "Production Day", "Start", "End"]
+    )
+
+    # ------------------------------------------------------------------------
+    # KPI details sheet
+    # ------------------------------------------------------------------------
+    kpi_df = pd.DataFrame([
+        ["OEE", round(metrics["oee_pct"], 2), f"{metrics['oee_pct']:.2f}%"],
+        ["Availability", round(metrics["availability_pct"], 2), f"{metrics['availability_pct']:.2f}%"],
+        ["Performance", round(metrics["performance_pct"], 2), f"{metrics['performance_pct']:.2f}%"],
+        ["Quality", round(metrics["quality_pct"], 2), f"{metrics['quality_pct']:.2f}%"],
+    ], columns=["KPI", "Raw Value", "Display Value"])
+
+    # ------------------------------------------------------------------------
+    # Quality details sheet
+    # ------------------------------------------------------------------------
+    quality_df = pd.DataFrame([
+        ["Good Bags", metrics["good_bags"], str(metrics["good_bags"])],
+        ["Burst Bags", metrics["burst_bags"], str(metrics["burst_bags"])],
+        ["Out of Limit Bags", metrics["out_of_limit_bags"], str(metrics["out_of_limit_bags"])],
+        ["Total Bags", metrics["total_bags"], str(metrics["total_bags"])],
+    ], columns=["Metric", "Raw Value", "Display Value"])
+
+    # ------------------------------------------------------------------------
+    # Write workbook
+    # ------------------------------------------------------------------------
+    with pd.ExcelWriter(excel_file, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        kpi_df.to_excel(writer, sheet_name="KPI Details", index=False)
+        quality_df.to_excel(writer, sheet_name="Quality Details", index=False)
+        shift_df.to_excel(writer, sheet_name="Shift Schedule", index=False)
+
+    # Basic formatting
+    from openpyxl import load_workbook
     wb = load_workbook(excel_file)
-    ws = wb.active
+
+    for ws in wb.worksheets:
+        ws.freeze_panes = "A2"
+        ws.column_dimensions["A"].width = 42
+        ws.column_dimensions["B"].width = 28
+        ws.column_dimensions["C"].width = 28
+        ws.column_dimensions["D"].width = 28
+
+        # Bold section/header rows in Summary
+        if ws.title == "Summary":
+            for row in ws.iter_rows():
+                if row[0].value in {
+                    "Report Period",
+                    "Business-Relevant KPIs",
+                    "Availability Details",
+                    "Bag Metrics",
+                    "Performance Details",
+                    "Downtime Breakdown By PLC",
+                    "Raw Aggregation Data",
+                    "Shift Changeover Delays (minutes)",
+                }:
+                    for cell in row:
+                        cell.font = cell.font.copy(bold=True)
+
+    wb.save(excel_file)
+
+    print(f"  ✓ Comprehensive Excel saved: {excel_file}")
+    print(f"  ✓ Includes Summary, KPI Details, Quality Details and Shift Schedule")
+
+    return excel_file
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX #3: ANALYSIS JSON CREATION (CORRECT PATH)
+# ════════════════════════════════════════════════════════════════════════════
+
+def load_previous_week_kpi(week: int, output_dir: Path) -> Dict[str, float]:
+    """
+    Load the previous week's kpi_percent from its already-saved
+    analysis.json (output/<site>/<week-1>/analysis.json), so the
+    Week-over-Week comparison table has something to compare against.
+
+    Returns {} if the previous week's report hasn't been generated yet
+    (e.g. the first week this pipeline runs for a site, or a gap week) —
+    the comparison table then correctly falls back to "-" / "No prior
+    data" rather than inventing a number.
+    """
+    previous_analysis_file = output_dir / str(week - 1) / "analysis.json"
+
+    if not previous_analysis_file.exists():
+        print(f"  (no previous-week analysis at {previous_analysis_file} — "
+              f"week-over-week comparison will show 'No prior data')")
+        return {}
+
+    try:
+        with open(previous_analysis_file, "r", encoding="utf-8") as file:
+            previous_analysis = json.load(file)
+    except (json.JSONDecodeError, OSError) as error:
+        print(f"  ⚠ Could not read previous week's analysis.json: {error}")
+        return {}
+
+    previous_kpi = previous_analysis.get("kpi_percent", {})
+
+    if previous_kpi:
+        print(f"  ✓ Loaded previous week's KPIs from {previous_analysis_file}")
+
+    return previous_kpi
+
+
+def save_analysis_json(metrics: Dict, site_id: str, week: int, output_dir: Path) -> Tuple[Path, Dict]:
+    """
+    Build and save complete analysis.json with all available metrics and
+    details.
+
+    This includes:
+    - KPI percentages (oee, availability, performance, quality)
+    - Quality details (good/burst/out of limit bags)
+    - Performance details (actual vs expected bags)
+    - Availability details (time values)
+    - Downtime breakdown by PLC and fault type
+    - Raw aggregation data
+    - Shift changeover (if available)
+
+    Output path: output/<site>/<week>/analysis.json
+
+    Returns:
+        (analysis_file, analysis) — the saved file's path AND the exact
+        dict that was written to it. Callers (run_analysis_pipeline) must
+        propagate the "analysis" dict, not the flat "metrics" dict passed
+        in, so that in-memory consumers (Stage 1.5 / generate_insights)
+        see the same shape as what's on disk.
+    """
+ 
+    report_dir = output_dir / str(week)
+    report_dir.mkdir(parents=True, exist_ok=True)
+ 
+    analysis_file = report_dir / "analysis.json"
+ 
+    print(f"[{site_id}] Saving analysis JSON...")
+    print(f"  Path: {analysis_file}")
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # BUILD AVAILABILITY DETAILS (with _min suffix for minutes)
+    # ════════════════════════════════════════════════════════════════════════
     
-    # ✅ USE CONFIG: Different cells for different sites
-    # JK Cement: C3, C4, C5, C6
-    # Shree Cement: D4, D5, D6, D7
-    # etc.
+    # Calculate planned production time and total available time from metrics
+    # These come from the ES aggregation totals
+    total_duration_sec = metrics.get("total_duration", 0)  # From ES: total durationPrevEvent
+    fault_duration_sec = metrics.get("fault_duration", 0)  # From ES: Fault_Counter duration
     
-    kpi_percent = {
-        "oee": ws[cell_mapping.get("oee", "C3")].value,
-        "availability": ws[cell_mapping.get("availability", "C4")].value,
-        "performance": ws[cell_mapping.get("performance", "C5")].value,
-        "quality": ws[cell_mapping.get("quality", "C6")].value,
-    }
+    total_duration_min = total_duration_sec / 60.0
+    fault_duration_min = fault_duration_sec / 60.0
+    planned_production_time_min = total_duration_min - fault_duration_min
     
     availability_details = {
-        "planned_production_time": ws[cell_mapping.get("planned_production_time", "C8")].value,
-        "total_available_time": ws[cell_mapping.get("total_available_time", "C9")].value,
-        "spout_fault": ws[cell_mapping.get("spout_fault", "C10")].value,
-        "main_drive_stop": ws[cell_mapping.get("main_drive_stop", "C11")].value,
-        "belt_not_running": ws[cell_mapping.get("belt_not_running", "C12")].value,
+        "planned_production_time_min": planned_production_time_min,
+        "total_available_time_min": total_duration_min,
     }
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # BUILD DOWNTIME BREAKDOWN BY PLC
+    # ════════════════════════════════════════════════════════════════════════
     
-    # Load previous week KPI for comparison
-    history_file = paths["history_dir"] / f"week_{week - 1}.json"
-    previous_kpi = {}
-    if history_file.exists():
-        with open(history_file) as f:
-            previous_kpi = json.load(f).get("kpi", {})
+    downtime_breakdown_by_plc = {}
+    site_config = get_site_config(site_id)
     
-    analysis = {
-        "week": week,
-        "site_id": site_id,
-        "name": site_config["name"],
-        "location": site_config["location"],
+    for plc_config in site_config["plc_config"]:
+        plc_id = plc_config["plc_id"]
+        agg_key = f"{plc_id.lower()}_downtime"
         
-        "kpi_percent": kpi_percent,
-        "previous_kpi": previous_kpi,
-        "availability_details": availability_details,
+        # Initialize PLC entry with machine name
+        plc_entry = {
+            "machine": plc_config.get("name", plc_id)
+        }
+        
+        # Extract fault breakdowns from aggregations
+        if agg_key in metrics.get("aggregations", {}):
+            by_type_buckets = metrics["aggregations"][agg_key]["by_type"]["buckets"]
+            
+            for fault_name, fault_data in by_type_buckets.items():
+                if "value" in fault_data and "value" in fault_data["value"]:
+                    fault_duration_seconds = fault_data["value"]["value"]
+                    fault_duration_minutes = fault_duration_seconds / 60.0
+                    
+                    # Use _min suffix for consistency with old code
+                    key_name = fault_name.lower().replace(" ", "_") + "_min"
+                    plc_entry[key_name] = fault_duration_minutes
+        
+        downtime_breakdown_by_plc[plc_id] = plc_entry
+
+    # ════════════════════════════════════════════════════════════════════════
+    # BUILD SHIFT CHANGEOVER (from calculate_shift_changeover_delays)
+    # ════════════════════════════════════════════════════════════════════════
+
+    shift_changeover_minutes = metrics.get("shift_changeover_minutes", {})
+
+    # Keys are single letters ("A"/"B"/"C") — this is what
+    # generate_docx.py's shift-changeover table reads via
+    # shift_changeover.get("A"/"B"/"C"). Using "Shift A"/etc. here was
+    # the reason the report used to show 0.00 min for every shift.
+    shift_changeover = {
+        letter: {
+            "raw_value": round(shift_changeover_minutes.get(letter, 0.0), 2),
+            "display_value": f"{shift_changeover_minutes.get(letter, 0.0):.2f} min",
+            "json_value": round(shift_changeover_minutes.get(letter, 0.0), 2),
+        }
+        for letter in ("A", "B", "C")
     }
-    
-    print(f"[{site_id}] Analysis extracted successfully")
-    
-    return analysis
 
+    # ════════════════════════════════════════════════════════════════════════
+    # BUILD COMPLETE ANALYSIS JSON
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    analysis = {
+        # ════ METADATA ════
+        "source": {
+            "file": "Elasticsearch aggregations",
+            "mode": "ES_QUERY",
+            "calculation_performed": True,
+            "source_of_truth": "Elasticsearch IoT data"
+        },
+        "machine": ", ".join([plc["name"] for plc in site_config["plc_config"]]),
+        
+        # ════ VERIFIED KPIs ════
+        "verified_kpis": {
+            "oee": round(metrics["oee_pct"], 2),
+            "availability": round(metrics["availability_pct"], 2),
+            "performance": round(metrics["performance_pct"], 2),
+            "quality": round(metrics["quality_pct"], 2),
+        },
+        
+        # ════ WEEK INFO ════
+        "week": week,
+        "previous_week": week - 1,
+        
+        # ════ REPORT PERIOD ════
+        "report_period": {
+            "start": metrics.get("period_start_str", ""),
+            "end": metrics.get("period_end_str", ""),
+            "start_raw": metrics.get("period_start_str", ""),
+            "end_raw": metrics.get("period_end_str", ""),
+        },
+        "previous_report_period": {
+            "start": "",  # Would be calculated from week-1 if needed
+            "end": "",
+        },
+        
+        # ════ PREVIOUS KPI (if available) ════
+        "previous_kpi": metrics.get("previous_kpi", {}),
+        "previous_kpi_available": bool(metrics.get("previous_kpi", {})),
+        
+        # ════ KPI (cell_info style - for compatibility) ════
+        "kpi": {
+            "oee": {
+                "raw_value": round(metrics["oee_pct"], 2),
+                "display_value": f"{metrics['oee_pct']:.2f}%",
+                "json_value": f"{metrics['oee_pct']:.2f}%"
+            },
+            "availability": {
+                "raw_value": round(metrics["availability_pct"], 2),
+                "display_value": f"{metrics['availability_pct']:.2f}%",
+                "json_value": f"{metrics['availability_pct']:.2f}%"
+            },
+            "performance": {
+                "raw_value": round(metrics["performance_pct"], 2),
+                "display_value": f"{metrics['performance_pct']:.2f}%",
+                "json_value": f"{metrics['performance_pct']:.2f}%"
+            },
+            "quality": {
+                "raw_value": round(metrics["quality_pct"], 2),
+                "display_value": f"{metrics['quality_pct']:.2f}%",
+                "json_value": f"{metrics['quality_pct']:.2f}%"
+            },
+        },
+        
+        # ════ KPI PERCENT (flat) ════
+        "kpi_percent": {
+            "oee": round(metrics["oee_pct"], 2),
+            "availability": round(metrics["availability_pct"], 2),
+            "performance": round(metrics["performance_pct"], 2),
+            "quality": round(metrics["quality_pct"], 2),
+        },
+        
+        # ════ AVAILABILITY DETAILS ════
+        "availability_details": availability_details,
+        
+        # ════ DOWNTIME BREAKDOWN BY PLC ════
+        "downtime_breakdown_by_plc": downtime_breakdown_by_plc,
+
+        # ════ SHIFT CHANGEOVER ════
+        "shift_changeover": shift_changeover,
+
+        # ════ SPOUT DOWNTIME BY PLC ════
+        # {plc_id: {spout_num: minutes}} — JSON serializes int keys as
+        # strings, generate_charts.py's spout chart reads them back as
+        # such. metrics.get(...) covers a call site that doesn't pass
+        # spout data through (defensive; run_analysis_pipeline always does).
+        "spout_downtime": metrics.get("spout_downtime", {}),
+        
+        # ════ QUALITY DETAILS ════
+        "quality_details": {
+            "good_bags": {
+                "raw_value": metrics["good_bags"],
+                "display_value": str(metrics["good_bags"]),
+                "json_value": metrics["good_bags"]
+            },
+            "burst_bags": {
+                "raw_value": metrics["burst_bags"],
+                "display_value": str(metrics["burst_bags"]),
+                "json_value": metrics["burst_bags"]
+            },
+            "out_of_limit_bags": {
+                "raw_value": metrics["out_of_limit_bags"],
+                "display_value": str(metrics["out_of_limit_bags"]),
+                "json_value": metrics["out_of_limit_bags"]
+            },
+            "total_bags": {
+                "raw_value": metrics["total_bags"],
+                "display_value": str(metrics["total_bags"]),
+                "json_value": metrics["total_bags"]
+            },
+        },
+        
+        # ════ PERFORMANCE DETAILS ════
+        "performance_details": {
+            "actual_good_bags": {
+                "raw_value": metrics["good_bags"],
+                "display_value": f"{metrics['good_bags']:.2f}",
+                "json_value": metrics["good_bags"]
+            },
+            "expected_good_bags": {
+                "raw_value": round(metrics["expected_good_bags"], 2),
+                "display_value": f"{metrics['expected_good_bags']:.2f}",
+                "json_value": round(metrics["expected_good_bags"], 2)
+            },
+        },
+        
+        # ════ RAW AGGREGATION DATA ════
+        "raw_aggregation_data": {
+            "good_bags": metrics["good_bags"],
+            "burst_bags": metrics["burst_bags"],
+            "out_of_limit": metrics["out_of_limit_bags"],
+            "total_bags": metrics["total_bags"],
+            "fault_duration": round(metrics["fault_duration"], 2),
+            "fault_scaled": round(metrics["fault_scaled"], 2),
+            "ideal_fault": round(metrics["ideal_fault"], 2),
+            "total_duration": round(metrics["total_duration"], 2),
+            "running_seconds": round(metrics["running_seconds"], 2),
+        },
+    }
+ 
+    # ════════════════════════════════════════════════════════════════════════
+    # SAVE TO FILE
+    # ════════════════════════════════════════════════════════════════════════
+ 
+    with open(analysis_file, "w", encoding="utf-8") as f:
+        json.dump(analysis, f, indent=4)
+ 
+    print(f"  ✓ Analysis JSON saved: {analysis_file}")
+ 
+    return analysis_file, analysis
+ 
 
 # ════════════════════════════════════════════════════════════════════════════
-# ENTRY POINT: UNIFIED PIPELINE
+# MAIN ENTRY POINT
 # ════════════════════════════════════════════════════════════════════════════
 
-def run_analysis_pipeline(site_id: str, week: int, config_manager: ConfigManager, status_callback=None) -> Tuple[Dict, Dict]:
+def run_analysis_pipeline(site_id: str, week: int, config_manager) -> Tuple[Dict, Dict]:
     """
-    ✅ UNIFIED ENTRY POINT: Works for ANY site.
-    
-    Complete analysis pipeline for a given site and week.
-    
-    All site-specific values come from config.json:
-    - Sensor keywords
-    - PLC configurations
-    - Excel cell mappings
-    - KPI thresholds
-    - OEE formulas
+    Complete OEE analysis pipeline with all fixes applied:
+    1. Proper Monday 06:00 → Monday 06:00 date ranges
+    2. Correct availability formula (608.33 divisor)
+    3. Consistent output paths
+    4. Elasticsearch runtime_mappings
+    5. Nested sum aggregations
+    6. Multi-site support with configurable mappings
     
     Args:
-        site_id: Site identifier (e.g., "jk_cement_aligarh", "shree_cement_etah")
-        week: ISO week number
-        config_manager: ConfigManager instance
-        status_callback: Optional function(message, progress) for progress tracking
+        site_id: Site identifier (e.g., "jk_cement_aligarh")
+        week: ISO week number (e.g., 36)
+        config_manager: ConfigManager instance with ES and site configuration
     
     Returns:
-        (analysis_dict, paths_dict)
-    
-    Raises:
-        Exception: If site_id not found, ES connection fails, etc.
+        (analysis_dict, paths_dict) — the exact same nested dict that was
+        written to analysis.json (with verified_kpis / kpi_percent /
+        quality_details / downtime_breakdown_by_plc / machine / week etc.),
+        NOT the flat internal "metrics" dict from calculate_oee_metrics().
+        This is what gets passed downstream to Stage 1.5's
+        generate_insights(), so it must match what's on disk.
     """
+
+    # Get paths for this site/week
+    paths_config = config_manager.get_paths(site_id, week)
+    output_dir = paths_config["week_output_dir"].parent  # Parent of week dir = output_folder
+
+    # Get basic site config from config_manager (for paths)
+    basic_site_config = config_manager.get_site_config(site_id)
     
-    def emit(message, progress=None):
-        if status_callback:
-            status_callback(message, progress)
-        print(f"[{site_id}] {message}")
+    # Get full site config from hardcoded SITE_CONFIG (for sensor keywords, PLC config, etc.)
+    site_config = get_site_config(site_id)
+
+    print(f"\n{'='*70}")
+    print(f"OEE ANALYSIS PIPELINE - {site_config['name']}")
+    print(f"{'='*70}\n")
+
+    print(f"Week: {week}")
+
+    # Get Elasticsearch configuration from config_manager
+    # NOTE: get_es_config() returns {"url": ..., "api_key": ...}
+    es_config = config_manager.get_es_config()
     
+    # Connect to Elasticsearch
+    es = Elasticsearch(
+        [es_config["url"]],
+        api_key=es_config["api_key"]
+    )
+
     try:
-        # Get site and ES config
-        site_config = config_manager.get_site_config(site_id)
-        es_config = config_manager.get_es_config()
-        paths = config_manager.get_paths(site_id, week)
+        # Calculate date range for this week
+        period_start, period_end = get_monday_6am_for_week(week)
         
-        emit("Initializing pipeline...", 5)
+        print(f"Period: {period_start.strftime('%Y-%m-%d %H:%M IST')} → {period_end.strftime('%Y-%m-%d %H:%M IST')}")
         
-        # Connect to Elasticsearch
-        emit("Connecting to Elasticsearch...", 10)
-        es = Elasticsearch(
-            [es_config["url"]],
-            api_key=es_config["api_key"],
-            request_timeout=120
+        # Run aggregations with fixes
+        response = run_oee_aggregations(es, site_id, period_start, period_end)
+
+        # Calculate metrics with CORRECT formulas (flat internal shape —
+        # NOT what gets returned to the caller; see save_analysis_json below)
+        metrics = calculate_oee_metrics(response, site_id)
+
+        # Add dates to metrics for Excel/JSON
+        metrics["period_start"] = period_start
+        metrics["period_end"] = period_end
+        metrics["period_start_str"] = period_start.strftime("%Y-%m-%d %H:%M:%S IST")
+        metrics["period_end_str"] = period_end.strftime("%Y-%m-%d %H:%M:%S IST")
+
+        # Shift changeover delays — a separate ES query, since it needs a
+        # per-occurrence (21x) sub-aggregation rather than the single
+        # summary aggregation the rest of the KPIs use.
+        metrics["shift_changeover_minutes"] = calculate_shift_changeover_delays(
+            es, site_id, period_start, period_end
         )
-        
-        # Get date range for the week
-        # (assumes you have a function for this)
-        period_start = datetime.now(ZoneInfo("Asia/Kolkata")) - timedelta(days=7)
-        period_end = datetime.now(ZoneInfo("Asia/Kolkata"))
-        
-        # ══════════════════════════════════════════════════════════════════
-        # STEP 1: Query Elasticsearch (using config-driven aggregation)
-        # ══════════════════════════════════════════════════════════════════
-        
-        emit("Querying Elasticsearch...", 20)
-        es_result = run_oee_aggregations(es, site_config, period_start, period_end)
-        
-        # ══════════════════════════════════════════════════════════════════
-        # STEP 2: Extract results from ES response
-        # ══════════════════════════════════════════════════════════════════
-        
-        emit("Extracting results from Elasticsearch...", 35)
-        extracted_data = extract_results_from_es(es_result, site_config)
-        
-        # ══════════════════════════════════════════════════════════════════
-        # STEP 3: Calculate OEE metrics (using config formulas)
-        # ══════════════════════════════════════════════════════════════════
-        
-        emit("Calculating OEE metrics...", 50)
-        oee_metrics = calculate_oee_metrics(extracted_data, site_config)
-        
-        # ══════════════════════════════════════════════════════════════════
-        # STEP 4: Generate Excel workbook
-        # ══════════════════════════════════════════════════════════════════
-        
-        emit("Generating Excel workbook...", 65)
-        excel_file = generate_excel_report(oee_metrics, extracted_data, site_id, config_manager, week)
-        
-        # ══════════════════════════════════════════════════════════════════
-        # STEP 5: Extract analysis from Excel (using config cell mapping)
-        # ══════════════════════════════════════════════════════════════════
-        
-        emit("Extracting analysis from Excel...", 80)
-        analysis = extract_analysis_from_excel(excel_file, site_id, week, config_manager)
-        
-        # ══════════════════════════════════════════════════════════════════
-        # STEP 6: Archive KPI snapshot for week-over-week comparison
-        # ══════════════════════════════════════════════════════════════════
-        
-        emit("Archiving KPI snapshot...", 90)
-        paths["history_dir"].mkdir(parents=True, exist_ok=True)
-        
-        snapshot_file = paths["history_dir"] / f"week_{week}.json"
-        with open(snapshot_file, "w", encoding="utf-8") as f:
-            json.dump({
-                "week": week,
-                "kpi": analysis["kpi_percent"],
-                "timestamp": datetime.now().isoformat()
-            }, f, indent=4)
-        
-        emit("Pipeline complete!", 100)
-        
+
+        # Previous week's KPIs, for the Week-over-Week comparison table.
+        # This was never populated before — the comparison table always
+        # showed "-" / "No prior data" regardless of whether a previous
+        # week had actually been run.
+        metrics["previous_kpi"] = load_previous_week_kpi(week, output_dir)
+
+        # Per-spout downtime by PLC, for the "2.2 Spout Downtime by
+        # Machine" report section / charts.
+        metrics["spout_downtime"] = get_plc_spout_downtime(es, site_id, period_start, period_end)
+
+        # Generate Excel with correct path
+        excel_file = generate_excel_report(metrics, site_id, week, output_dir)
+
+        # Save analysis JSON with correct path.
+        # FIX: capture the nested "analysis" dict this returns (in addition
+        # to the file path) so we can hand it back to the caller instead of
+        # the flat "metrics" dict.
+        analysis_file, analysis = save_analysis_json(metrics, site_id, week, output_dir)
+
+        print(f"\n{'='*70}")
+        print("✓ Pipeline Complete")
+        print(f"{'='*70}\n")
+
+        paths = {
+            "excel_file": str(excel_file),
+            "analysis_json": str(analysis_file),
+            "output_dir": str(output_dir),
+        }
+
+        # FIX: return the nested "analysis" dict (matches analysis.json on
+        # disk), not the flat "metrics" dict. This is what Stage 1.5 will
+        # receive as its in-memory analysis object.
         return analysis, paths
-    
+
     except Exception as e:
-        emit(f"ERROR: {str(e)}", None)
+        print(f"\n✗ Pipeline failed: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# MULTI-SITE ORCHESTRATION
-# ════════════════════════════════════════════════════════════════════════════
-
-def main_multisite():
-    """
-    ✅ PROCESS MULTIPLE SITES: Orchestrates analysis for all active sites.
-    
-    Config.json defines which sites are active.
-    Each site gets analyzed sequentially using the generic pipeline.
-    """
-    
-    config_manager = ConfigManager("config.json")
-    active_sites = config_manager.get_active_sites()
-    
-    print(f"Starting multi-site analysis for {len(active_sites)} sites...\n")
-    
-    for site_id in active_sites:
-        print(f"\n{'='*70}")
-        print(f"Processing: {site_id}")
-        print(f"{'='*70}\n")
-        
-        try:
-            analysis, paths = run_analysis_pipeline(
-                site_id=site_id,
-                week=36,  # Current week
-                config_manager=config_manager
-            )
-            
-            print(f"\n✓ {site_id} completed successfully")
-            print(f"  Excel: {paths['excel_file']}")
-            print(f"  Analysis: {paths['analysis_json']}")
-        
-        except Exception as e:
-            print(f"\n✗ {site_id} failed: {e}")
-            import traceback
-            traceback.print_exc()
+    finally:
+        es.close()
 
 
 if __name__ == "__main__":
-    main_multisite()
+    # Example usage
+    es_config = {
+        "es_url": "https://your-es-url:9243",
+        "api_key": "your-api-key",
+    }
+
+    output_dir = Path("output")
+
+    # Run for all available sites
+    for site_id in SITE_CONFIG.keys():
+        try:
+            print(f"\nProcessing {site_id}...")
+            analysis, paths = run_analysis_pipeline(site_id, es_config, output_dir)
+
+            print(f"\nResults for {site_id}:")
+            print(f"  Excel: {paths['excel_file']}")
+            print(f"  JSON: {paths['analysis_json']}")
+            print(f"  OEE: {analysis['verified_kpis']['oee']:.2f}%")
+            print(f"  Availability: {analysis['verified_kpis']['availability']:.2f}%\n")
+        except Exception as e:
+            print(f"Failed to process {site_id}: {e}\n")

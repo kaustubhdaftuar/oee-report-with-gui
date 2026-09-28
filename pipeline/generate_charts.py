@@ -8,9 +8,8 @@ This module is now completely config-driven. All site-specific values
 
 Key Functions:
 - generate_kpi_scorecard_chart(data, site_config)
-- generate_availability_breakdown_chart(data, site_config)
+- generate_availability_chart(data, site_config)
 - generate_downtime_by_fault_chart(data, site_config)
-- generate_spout_fault_distribution_chart(data, site_config)
 - generate_quality_metrics_chart(data, site_config)
 - generate_oee_trend_chart(data, site_config)
 - generate_all_charts(site_id, week, config_manager)
@@ -54,6 +53,7 @@ def get_number(value, default=0.0):
     Supports:
     - Float: 99.78
     - String with unit: "99.78%", "1000.0 min", "+0.19"
+    - Dict with raw_value: {"raw_value": 99.78, ...}
     - None: returns default
     """
     
@@ -62,6 +62,12 @@ def get_number(value, default=0.0):
     
     if isinstance(value, bool):
         return default
+    
+    if isinstance(value, dict):
+        # Handle cell_info structure
+        value = value.get("raw_value", default)
+        if value is None:
+            return default
     
     if isinstance(value, (int, float)):
         return float(value)
@@ -84,6 +90,8 @@ def get_kpi_value(data, name):
     Read a KPI percentage (0-100 scale) for the given name
     ('availability', 'performance', 'quality', 'oee').
     
+    ✅ FIXED: Handles both flat float values and nested dict structures.
+    
     Args:
         data: analysis dict from create_analysis.py
         name: 'oee', 'availability', 'performance', 'quality'
@@ -92,19 +100,32 @@ def get_kpi_value(data, name):
         float: KPI value (0-100 scale)
     """
     
+    # PRIMARY: Try kpi_percent (flat structure with float values)
     kpi_percent = data.get("kpi_percent", {})
     value = kpi_percent.get(name)
     
     if value is not None:
         return get_number(value)
     
-    # Fallback for older format
+    # FALLBACK: Try nested kpi structure (dict with "raw_value" key)
     kpi = data.get("kpi", {})
     item = kpi.get(name, {})
-    raw_value = item.get("raw_value")
     
-    if raw_value is not None:
-        value = get_number(raw_value)
+    # Check if item is a dict with raw_value
+    if isinstance(item, dict):
+        raw_value = item.get("raw_value")
+        
+        if raw_value is not None:
+            value = get_number(raw_value)
+            # Scale up if value is 0-1 (should be 0-100)
+            if name in ("availability", "performance", "quality"):
+                if abs(value) <= 1:
+                    value *= 100
+            return value
+    
+    # If item is already a number (float), use it directly
+    elif isinstance(item, (int, float)):
+        value = get_number(item)
         if name in ("availability", "performance", "quality"):
             if abs(value) <= 1:
                 value *= 100
@@ -148,7 +169,7 @@ def generate_kpi_scorecard_chart(data: Dict[str, Any], site_config: Dict[str, An
         site_config: site configuration from config.json
     
     Returns:
-        path to saved chart
+        matplotlib figure
     """
     
     print(f"\n[{site_config['site_id']}] Generating KPI scorecard chart...")
@@ -222,14 +243,14 @@ def generate_kpi_scorecard_chart(data: Dict[str, Any], site_config: Dict[str, An
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 2. AVAILABILITY BREAKDOWN
+# 2. AVAILABILITY BREAKDOWN (Donut)
 # ════════════════════════════════════════════════════════════════════════════
 
 def generate_availability_breakdown_chart(data: Dict[str, Any], site_config: Dict[str, Any]) -> str:
     """
     ✅ DYNAMIC: Donut chart showing availability breakdown.
     
-    Reads availability details from data (created by create_analysis.py).
+    Reads availability details from data using _min suffixes.
     
     Args:
         data: analysis dict
@@ -243,11 +264,24 @@ def generate_availability_breakdown_chart(data: Dict[str, Any], site_config: Dic
     
     availability_details = data.get("availability_details", {})
     
-    planned_time = get_number(availability_details.get("planned_production_time", 0))
-    downtime = get_number(availability_details.get("total_available_time", 0)) - planned_time
+    # ✅ Use _min suffix (actual data structure)
+    planned_time = get_number(availability_details.get("planned_production_time_min", 0))
+    total_available = get_number(availability_details.get("total_available_time_min", 0))
     
+    downtime = total_available - planned_time
     if downtime < 0:
         downtime = 0
+    
+    # Guard against zero-sized pie chart
+    if planned_time <= 0 and downtime <= 0:
+        print(f"  ⚠ No availability data; skipping chart")
+        fig = plt.figure(figsize=(8, 6))
+        plt.text(0.5, 0.5, "Insufficient availability data",
+                ha="center", va="center", fontsize=12, 
+                transform=plt.gca().transAxes)
+        plt.axis("off")
+        plt.tight_layout()
+        return fig
     
     sizes = [planned_time, downtime]
     labels = [f"Production\n{planned_time:.0f} min", f"Downtime\n{downtime:.0f} min"]
@@ -277,7 +311,7 @@ def generate_downtime_by_fault_chart(data: Dict[str, Any], site_config: Dict[str
     """
     ✅ DYNAMIC: Horizontal bar chart showing downtime by fault type.
     
-    Reads fault breakdown from data and uses site-specific fault names from config.
+    Reads fault breakdown from downtime_breakdown_by_plc and aggregates across PLCs.
     
     Args:
         data: analysis dict
@@ -289,19 +323,47 @@ def generate_downtime_by_fault_chart(data: Dict[str, Any], site_config: Dict[str
     
     print(f"\n[{site_config['site_id']}] Generating downtime by fault chart...")
     
-    availability_details = data.get("availability_details", {})
+    breakdown = data.get("downtime_breakdown_by_plc", {})
     
-    fault_types = {
-        "spout_fault": "Spout Fault",
-        "main_drive_stop": "Main Drive Stop",
-        "belt_not_running": "Belt Not Running"
+    if not breakdown:
+        print(f"  ⚠ No PLC downtime breakdown found; skipping chart")
+        fig = plt.figure(figsize=(10, 5))
+        plt.text(0.5, 0.5, "No downtime data available",
+                ha="center", va="center", fontsize=12,
+                transform=plt.gca().transAxes)
+        plt.axis("off")
+        plt.tight_layout()
+        return fig
+    
+    # Map fault keys to labels
+    fault_key_to_label = {
+        "spout_fault_min": "Spout Fault",
+        "main_drive_stop_min": "Main Drive Stop",
+        "belt_not_running_min": "Belt Not Running",
     }
     
-    fault_names = [fault_types[key] for key in fault_types.keys()]
-    fault_values = [
-        get_number(availability_details.get(key, 0))
-        for key in fault_types.keys()
-    ]
+    # Aggregate across all PLCs
+    fault_totals = {}
+    
+    for plc_entry in breakdown.values():
+        for key, value in plc_entry.items():
+            if key != "machine":
+                label = fault_key_to_label.get(key, key.replace("_min", "").replace("_", " ").title())
+                num_value = get_number(value)
+                fault_totals[label] = fault_totals.get(label, 0) + num_value
+    
+    if not fault_totals or not any(v > 0 for v in fault_totals.values()):
+        print(f"  ⚠ No fault duration values; skipping chart")
+        fig = plt.figure(figsize=(10, 5))
+        plt.text(0.5, 0.5, "No fault data available",
+                ha="center", va="center", fontsize=12,
+                transform=plt.gca().transAxes)
+        plt.axis("off")
+        plt.tight_layout()
+        return fig
+    
+    fault_names = list(fault_totals.keys())
+    fault_values = list(fault_totals.values())
     
     plt.figure(figsize=(10, 5))
     
@@ -330,7 +392,9 @@ def generate_downtime_by_fault_chart(data: Dict[str, Any], site_config: Dict[str
 
 def generate_quality_metrics_chart(data: Dict[str, Any], site_config: Dict[str, Any]) -> str:
     """
-    ✅ DYNAMIC: Stacked bar showing good vs defective bags.
+    ✅ DYNAMIC: Donut chart showing quality breakdown.
+    
+    Reads quality details (good bags, burst bags, out of limit) from data.
     
     Args:
         data: analysis dict
@@ -342,34 +406,54 @@ def generate_quality_metrics_chart(data: Dict[str, Any], site_config: Dict[str, 
     
     print(f"\n[{site_config['site_id']}] Generating quality metrics chart...")
     
-    availability_details = data.get("availability_details", {})
+    quality_details = data.get("quality_details", {})
     
-    good_bags = get_number(availability_details.get("good_bags", 0))
-    burst_bags = get_number(availability_details.get("burst_bags", 0))
-    out_of_limit = get_number(availability_details.get("out_of_limit_bags", 0))
+    quality_items = [
+        ("Out of Limit Bags", quality_details.get("out_of_limit_bags")),
+        ("Burst Bags", quality_details.get("burst_bags")),
+        ("Good Bags", quality_details.get("good_bags")),
+    ]
     
-    categories = ["Good Bags", "Burst Bags", "Out of Limit"]
-    values = [good_bags, burst_bags, out_of_limit]
-    colors_quality = [COLOR_GOOD, COLOR_BAD, COLOR_WARN]
+    contributors = []
     
-    plt.figure(figsize=(10, 5))
+    for reason, value in quality_items:
+        number = get_number(value)
+        if number > 0:
+            contributors.append({"reason": reason, "bags": number})
     
-    bars = plt.bar(
-        categories, values,
-        color=colors_quality,
-        edgecolor="black",
-        linewidth=1.5
+    if not contributors:
+        print(f"  ⚠ No quality data; skipping chart")
+        fig = plt.figure(figsize=(10, 5))
+        plt.text(0.5, 0.5, "No quality data available",
+                ha="center", va="center", fontsize=12,
+                transform=plt.gca().transAxes)
+        plt.axis("off")
+        plt.tight_layout()
+        return fig
+    
+    # Sort by bag count descending
+    contributors.sort(key=lambda x: x["bags"], reverse=True)
+    
+    # Largest loss category first (for title)
+    loss_categories = [c for c in contributors if "Good" not in c["reason"]]
+    largest_loss = loss_categories[0]["reason"] if loss_categories else "Quality Loss"
+    
+    labels = [c["reason"] for c in contributors]
+    sizes = [c["bags"] for c in contributors]
+    colors = [COLOR_GOOD if "Good" in l else COLOR_BAD if "Burst" in l else COLOR_WARN 
+              for l in labels]
+    
+    plt.figure(figsize=(10, 6))
+    
+    plt.pie(
+        sizes, labels=labels,
+        colors=colors,
+        autopct="%1.1f%%",
+        startangle=90,
+        wedgeprops={"edgecolor": "black", "linewidth": 1.5}
     )
     
-    for bar, value in zip(bars, values):
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2, height,
-                f"{value:,.0f}",
-                ha="center", va="bottom", fontweight="bold")
-    
-    plt.title("Quality Metrics: Bag Status", fontsize=14, fontweight="bold")
-    plt.ylabel("Count")
-    plt.grid(True, axis="y", alpha=0.3)
+    plt.title(f"Quality Metrics: {largest_loss}", fontsize=14, fontweight="bold")
     plt.tight_layout()
     
     return plt.gcf()
@@ -437,6 +521,63 @@ def generate_oee_trend_chart(data: Dict[str, Any], site_config: Dict[str, Any]) 
     plt.legend(loc="upper left")
     plt.tight_layout()
     
+    return plt.gcf()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 6. SPOUT DOWNTIME BY MACHINE (one chart per PLC)
+# ════════════════════════════════════════════════════════════════════════════
+
+def generate_spout_downtime_chart(spout_data: Dict[Any, Any], plc_label: str):
+    """
+    Horizontal bar chart of per-spout downtime minutes for one PLC.
+
+    Args:
+        spout_data: {spout_number: downtime_minutes, ...} — as saved in
+            analysis.json's spout_downtime[plc_id]. Keys come back as
+            strings after a JSON round-trip; coerced to int here for
+            sorting/display.
+        plc_label: display name for the chart title (e.g. "Fillpac 1").
+
+    Returns:
+        matplotlib figure. If spout_data is empty, returns a placeholder
+        "No spout downtime recorded" figure instead of an empty plot —
+        this is what makes a PLC with zero spout faults this week still
+        render a real (if blank) image instead of leaving the report's
+        image placeholder untouched.
+    """
+    if not spout_data:
+        fig = plt.figure(figsize=(10, 5))
+        plt.text(0.5, 0.5, "No spout downtime recorded",
+                  ha="center", va="center", fontsize=12,
+                  transform=plt.gca().transAxes)
+        plt.axis("off")
+        plt.tight_layout()
+        return fig
+
+    items = sorted(
+        ((int(spout), get_number(minutes)) for spout, minutes in spout_data.items()),
+        key=lambda item: item[0],
+    )
+    labels = [f"Spout {spout}" for spout, _ in items]
+    values = [minutes for _, minutes in items]
+
+    plt.figure(figsize=(10, max(4, 0.35 * len(items))))
+
+    bars = plt.barh(labels, values, color=COLOR_WARN, edgecolor="black", linewidth=1)
+
+    for bar, value in zip(bars, values):
+        plt.text(
+            value, bar.get_y() + bar.get_height() / 2, f"{value:.1f} min",
+            ha="left", va="center", fontweight="bold", fontsize=8,
+        )
+
+    plt.title(f"Spout Downtime — {plc_label}", fontsize=13, fontweight="bold")
+    plt.xlabel("Duration (minutes)")
+    plt.gca().invert_yaxis()  # Spout 1 at top
+    plt.grid(True, axis="x", alpha=0.3)
+    plt.tight_layout()
+
     return plt.gcf()
 
 
@@ -520,6 +661,36 @@ def generate_all_charts(site_id: str, week: int, config_manager) -> Dict[str, Pa
             print(f"  ✗ {chart_name} failed: {e}")
             raise
     
+    # --------------------------------------------------------------------
+    # Spout downtime — one chart per PLC (not part of the uniform
+    # single-figure-per-name loop above, since it produces N files, one
+    # per PLC configured for this site, rather than exactly one).
+    # --------------------------------------------------------------------
+    spout_downtime_data = data.get("spout_downtime", {})
+
+    plc_machine_names = {
+        plc_id: entry.get("machine", plc_id)
+        for plc_id, entry in data.get("downtime_breakdown_by_plc", {}).items()
+    }
+
+    for plc_id, spout_data in spout_downtime_data.items():
+        chart_key = f"spout_downtime_{plc_id.lower()}"
+
+        try:
+            plc_label = plc_machine_names.get(plc_id, plc_id)
+            fig = generate_spout_downtime_chart(spout_data, plc_label)
+
+            chart_path = chart_dir / f"{chart_key}.png"
+            fig.savefig(chart_path, dpi=300, bbox_inches="tight")
+            plt.close(fig)
+
+            chart_files[chart_key] = chart_path
+            print(f"  ✓ {chart_key}.png saved")
+
+        except Exception as e:
+            print(f"  ✗ {chart_key} failed: {e}")
+            raise
+
     print(f"\n✓ All charts generated for {site_id} week {week}")
     
     return chart_files

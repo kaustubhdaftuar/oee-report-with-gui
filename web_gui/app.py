@@ -33,8 +33,31 @@ from flask_cors import CORS
 import argparse
 import signal
 
+
+def make_json_safe(value):
+    """Convert pipeline/queue values into JSON-serializable values."""
+    if isinstance(value, Path):
+        return str(value)
+
+    if isinstance(value, dict):
+        return {str(key): make_json_safe(item) for key, item in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [make_json_safe(item) for item in value]
+
+    # Handles datetime and other objects returned by the pipeline.
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
+
 # ✅ Add parent directory to path so we can import from sibling pipeline/ folder
-sys.path.insert(0, str(Path(__file__).parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+FRONTEND_FILE = Path(__file__).resolve().parent / "index.html"
+
+sys.path.insert(0, str(PROJECT_ROOT))
 
 # ✅ Now import from pipeline (sibling folder)
 from pipeline.config_manager import ConfigManager
@@ -46,7 +69,7 @@ from pipeline.run_pipeline import run_full_pipeline
 # FLASK APP INITIALIZATION
 # ════════════════════════════════════════════════════════════════════════════
 
-def create_app(config_path: str = "config.json"):
+def create_app(config_path: str = None):
     """
     Create and configure Flask app.
     
@@ -57,7 +80,20 @@ def create_app(config_path: str = "config.json"):
         Flask app instance with all routes configured
     """
     
+    if config_path is None:
+        config_path = str(PROJECT_ROOT / "config.json")
+    else:
+        config_path = str(Path(config_path).expanduser())
+        if not Path(config_path).is_absolute():
+            config_path = str((Path.cwd() / config_path).resolve())
+
     app = Flask(__name__, static_folder='static', template_folder='templates')
+
+    @app.route("/", methods=["GET"])
+    def frontend():
+        if not FRONTEND_FILE.exists():
+            return jsonify({"error": f"Frontend file not found: {FRONTEND_FILE}"}), 500
+        return send_file(str(FRONTEND_FILE), mimetype="text/html")
     CORS(app)  # Enable CORS for all routes
     
     # Load config
@@ -233,6 +269,7 @@ def create_app(config_path: str = "config.json"):
         try:
             queue = app.config["queue"]
             status = queue.get_job_status(job_id)
+            status = make_json_safe(status)
             
             return jsonify(status), 200
         
@@ -270,7 +307,7 @@ def create_app(config_path: str = "config.json"):
             
             return jsonify({
                 "total": len(jobs),
-                "jobs": jobs
+                "jobs": make_json_safe(jobs)
             }), 200
         
         except Exception as e:
@@ -411,7 +448,11 @@ def create_app(config_path: str = "config.json"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OEE Report API Server")
-    parser.add_argument("--config", default="../config.json", help="Path to config.json")
+    parser.add_argument(
+        "--config",
+        default=str(PROJECT_ROOT / "config.json"),
+        help="Path to config.json",
+    )
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=5000, help="Port to listen on")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")

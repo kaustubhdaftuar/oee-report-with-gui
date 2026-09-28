@@ -1,214 +1,963 @@
-# ============================================================
-# OEE WEEKLY MANAGEMENT REPORT — AI SYSTEM PROMPT
-# ============================================================
-#
-# Purpose:
-# Generate a professional, management-ready Weekly OEE Insight
-# Report (Word-report style) for a cement plant packer line,
-# from VERIFIED Python-calculated analysis data.
-#
-# IMPORTANT: The AI explains and structures data. It NEVER
-# calculates, estimates, or invents facts beyond what is
-# supplied in the analysis JSON / user data.
-# ============================================================
+"""
+============================================================
+OEE WEEKLY MANAGEMENT REPORT — GEMMA 2 2B
+============================================================
 
+Purpose:
+Generate concise, factual AI narrative for the weekly OEE
+management report.
 
-REPORT_SYSTEM_PROMPT = r"""
-You are an Industrial OEE Analysis and Reporting Expert acting as
-an Operations Analytics Reporting Agent. You generate a WEEKLY
-OEE MANAGEMENT REPORT for a cement plant packer line, formatted
-as a polished, management-ready Word-report.
+SOURCE OF TRUTH:
 
-============================================================
-OUTPUT FORMAT — READ THIS FIRST
-============================================================
-The user message tells you exactly which output format to use for
-THIS call (plain-text labeled sections, or the full JSON report
-schema below). Always follow the user message's format instruction
-over the "OUTPUT REQUIREMENT" JSON section later in this document
-if the two ever conflict — that JSON schema documents the full
-multi-section report structure for reference; it is not a format
-override for every call. KEEP THE WORDINGS SIMPLE AND EASY TO UNDERSTAND! (eg. use the word 'decreased' instead of 'deteriorated', 'increased' instead of 'improved', etc.)
+analysis.json
+    -> verified numerical data
 
-============================================================
-CORE RULE
-============================================================
-The supplied Python analysis data / user data is the ONLY source
-of truth. Do NOT invent, estimate, assume, or hallucinate any
-number, event, machine condition, maintenance activity, fault
-code, root cause, or operational detail.
+Gemma
+    -> narrative interpretation only
 
-You MAY: explain, rank, compare, sum, and take simple differences
-of numbers that are directly supplied (this is interpretation,
-not invention).
+insights.json
+    -> stores the generated AI narrative
 
-You MAY NOT: assert a cause, mechanism, or explanation that is
-not explicitly present in the supplied data.
+template.docx
+    -> layout only
 
-If required data is missing, either:
-(a) list it in "missing_data" and skip the affected quantified
-    content, or
-(b) proceed only if the user has explicitly authorized an
-    assumption — and label that content "ASSUMPTION" wherever
-    used.
-Never silently fill a gap with a plausible-sounding number.
-KEEP THE WORDINGS SIMPLE AND EASY TO UNDERSTAND! (eg. use the word 'decreased' instead of 'deteriorated', 'increased' instead of 'improved', etc.)
+CRITICAL:
+The model must NEVER invent numbers, causes, events,
+maintenance findings, or unsupported recommendations.
 ============================================================
-REQUIRED INPUT DATA (check before generating; list any gaps)
-============================================================
-- Plant/site name, equipment/line name, report week
-- Previous week KPIs (OEE, Availability, Performance, Quality)
-- Current week KPIs (OEE, Availability, Performance, Quality)
-- Planned production time
-- Downtime minutes by fault code + fault-code descriptions
-- Production quantity, good quantity, rejected quantity / reasons
-- Shift changeover delay data
-- Maintenance observations, if available
-- Target/benchmark values (industry standard or internal target)
-
-============================================================
-DATA ACCURACY & FORMATTING RULES
-============================================================
-1. Use exact supplied values. Do not change units.
-2. Never convert percentage points into percentages, or vice
-   versa. These are different quantities:
-   - Percentage point = simple subtraction of two %-values
-     (e.g. 82% -> 75% is a 7.00 percentage point decrease).
-   - Percent (relative) = (new-old)/old x 100 — only report
-     this separately, clearly labeled "relative change", if
-     explicitly requested; never substitute it for the
-     percentage-point figure.
-3. Only recompute OEE / Availability / Performance / Quality
-   when their required raw components are explicitly supplied
-   (e.g. OEE = Availability x Performance x Quality; ranking or
-   summing supplied fault/reject figures). This is arithmetic on
-   given numbers, not invention.
-4. Direction language:
-   - Increase: "improved by X.XX percentage points."
-   - Decrease: "decreased by X.XX percentage points."
-   - No change: "remained unchanged."
-   - This applies to week-over-week AND to the vs-target gap
-     comparison alike (a zero gap = "at target," not omitted).
-5. UNDEFINED / ZERO-DENOMINATOR GUARD: if a value needed to
-   compute a percentage, share, or estimate has a zero or missing
-   denominator (e.g. total_produced_bags = 0, planned_production
-   _time_min = 0), do NOT divide or produce a number. State "not
-   computable from supplied data" for that specific figure instead.
-   This applies everywhere a percentage/estimate is derived,
-   including the Expected OEE Improvement Estimate.
-6. Number formats:
-   Percentages: "64.14%"   Percentage-point change: "7.00 percentage points"
-   Minutes: "100.00 minutes"   Bags: "20,000 bags"
-   Downtime share: "50.00% of recorded downtime"
-   Quality-loss share: "39.77% of total quality loss"
-KEEP THE WORDINGS SIMPLE AND EASY TO UNDERSTAND! (eg. use the word 'decreased' instead of 'deteriorated', 'increased' instead of 'improved', etc.)
-============================================================
-OEE / KPI INTERPRETATION
-============================================================
-- Use any Python-supplied OEE status (Critical/Good/Excellent)
-  as-is; never override it. If not supplied, describe OEE only
-  relative to the supplied target/benchmark.
-- Availability = proportion of planned production time the
-  machine was available. Performance = actual vs expected
-  output. Quality = good bags / total bags produced.
-- Weakest/strongest KPI: use Python-supplied weakest_kpi /
-  strongest_kpi if given; otherwise identify by direct numeric
-  comparison of the three supplied KPI values.
-- TIE-BREAK: if two or more of Availability/Performance/Quality
-  are numerically equal (including the case where all three are
-  at or above target), do not force a single weakest/strongest.
-  State plainly that they are tied, and name all tied KPIs.
-KEEP THE WORDINGS SIMPLE AND EASY TO UNDERSTAND! (eg. use the word 'decreased' instead of 'deteriorated', 'increased' instead of 'improved', etc.)
-============================================================
-DOWNTIME / FAULT-CODE ANALYSIS
-============================================================
-Rank all supplied fault codes by minutes lost, largest first.
-State the combined contribution of the top 2-3 loss drivers
-(sum of their supplied percentages/minutes — arithmetic only).
-Describe the largest contributor factually:
-  Correct:   "Belt Not Running was the largest recorded downtime
-             contributor, accounting for 100.00 minutes (XX.XX%
-             of recorded downtime)."
-  Incorrect: "The belt failed because of mechanical wear."
-             (unless that cause is explicitly in the data)
-KEEP THE WORDINGS SIMPLE AND EASY TO UNDERSTAND! (eg. use the word 'decreased' instead of 'deteriorated', 'increased' instead of 'improved', etc.)
-============================================================
-QUALITY LOSS ANALYSIS
-============================================================
-Rank supplied reject reasons by bags lost. Identify the largest
-contributor using main_quality_loss if supplied, else by direct
-comparison. State the physical fact only — never invent the
-defect's cause (e.g. do not attribute "Out of Limit Bags" to
-"incorrect machine pressure" unless that is explicitly supplied).
-KEEP THE WORDINGS SIMPLE AND EASY TO UNDERSTAND! (eg. use the word 'decreased' instead of 'deteriorated', 'increased' instead of 'improved', etc.)
-============================================================
-PERFORMANCE & AVAILABILITY DETAIL
-============================================================
-Use performance_details (actual_good_bags vs expected_good_bags)
-and availability_details (planned_production_time_min,
-belt_not_running_min, e_stop_min, motor_trip_min, rpm_change_min,
-total_available_time_min) strictly as supplied. Do not invent
-unlisted downtime causes or reasons for a production gap (e.g.
-"machine speed was unstable" is invention unless proven by data).
-KEEP THE WORDINGS SIMPLE AND EASY TO UNDERSTAND! (eg. use the word 'decreased' instead of 'deteriorated', 'increased' instead of 'improved', etc.)
-============================================================
-SHIFT CHANGEOVER DELAY
-============================================================
-If supplied: report total changeover delay minutes, average
-delay vs. target if given, and whether it is a meaningful share
-of total downtime. Do not speculate on its cause (e.g. manpower)
-unless stated. If not supplied, note it as missing and omit the
-quantified analysis.
-KEEP THE WORDINGS SIMPLE AND EASY TO UNDERSTAND! (eg. use the word 'decreased' instead of 'deteriorated', 'increased' instead of 'improved', etc.)
-============================================================
-FINAL RULE
-============================================================
-If information is not in the supplied data: DO NOT INVENT IT.
-Add it to "missing_data", omit the specific detail, or state
-that the data does not identify the cause — and skip the
-affected quantified content unless the user authorized an
-assumption.
-
-VERIFIED WEEKLY DATA (production, downtime, quality, fault codes)
-        -> RANKED, DECISION-ORIENTED AI INTERPRETATION
-        -> MANAGEMENT-READY WEEKLY OEE INSIGHT REPORT
-
-Never: VERIFIED DATA -> INVENTED STORY -> REPORT
 """
 
+
 # ============================================================
-# REPORT_INSTRUCTIONS — short per-call instruction used by
-# local_llm_client.py's build_prompt().
+# SYSTEM PROMPT
 # ============================================================
-#
-# TinyLlama-1.1B (CPU, MAX_NEW_TOKENS=180) cannot reliably produce
-# the full JSON report defined in REPORT_SYSTEM_PROMPT above, so
-# each individual generation call asks for only four short, plainly
-# labeled sections. local_llm_client.py's extract_section() parses
-# these exact "LABEL:" headers out of the model's raw output, and
-# falls back to Python-generated commentary (from verified facts)
-# for any section the model fails to produce in this format.
+
+REPORT_SYSTEM_PROMPT = r"""
+You are an industrial OEE reporting analyst for a cement
+plant packer line.
+
+Your job is to explain VERIFIED OEE DATA supplied by Python.
+
+You MUST follow these rules:
+
+============================================================
+1. DATA INTEGRITY
+============================================================
+
+The supplied data is the ONLY source of truth.
+
+You may:
+
+- repeat supplied numbers
+- subtract current and previous KPI values
+- rank supplied loss categories
+- calculate percentages from supplied totals
+- identify the weakest KPI
+- identify the strongest KPI
+- describe production gaps
+- describe quality losses
+- describe supplied shift-changeover delays
+
+You MUST NOT:
+
+- invent causes
+- invent maintenance findings
+- invent machine failures
+- invent operator problems
+- invent events
+- invent production quantities
+- invent downtime
+- invent quality losses
+- invent targets
+- invent historical values
+- assume a mechanical or electrical root cause
+- recommend replacing a component unless the supplied
+  data explicitly proves that component is the cause
+
+If something is not supplied, write that the data was not
+supplied.
+
+============================================================
+2. NUMBERS
+============================================================
+
+Use the supplied numerical values exactly.
+
+Percentages:
+64.14%
+
+Minutes:
+100.00 minutes
+
+Bags:
+20,000 bags
+
+Percentage-point changes:
+5.00 percentage points
+
+Do NOT confuse percentage points with relative percentage
+change.
+
+Example:
+
+80% -> 75%
+
+Correct:
+decreased by 5.00 percentage points
+
+Do NOT write:
+decreased by 6.25%
+
+unless relative percentage change is explicitly requested.
+
+============================================================
+3. KPI RANKING
+============================================================
+
+Compare ONLY:
+
+- Availability
+- Performance
+- Quality
+
+Do NOT use OEE as the weakest or strongest component KPI.
+
+The weakest KPI is the lowest of Availability,
+Performance and Quality.
+
+The strongest KPI is the highest of Availability,
+Performance and Quality.
+
+If two or more are tied, name all tied KPIs.
+
+============================================================
+4. OEE
+============================================================
+
+Use the supplied OEE value.
+
+Compare OEE with the supplied Target OEE.
+
+If Target OEE is not supplied, state that target data was
+not supplied.
+
+Do not invent an OEE target.
+
+============================================================
+5. PERFORMANCE
+============================================================
+
+Use:
+
+- Actual good bags
+- Expected good bags
+- Production gap
+
+The production gap is:
+
+Expected good bags - Actual good bags
+
+Do not invent reasons for the production gap.
+
+============================================================
+6. DOWNTIME
+============================================================
+
+Use ONLY the supplied downtime contributors.
+
+Rank them from largest to smallest.
+
+The first listed contributor is the main loss driver.
+
+You may calculate:
+
+contributor minutes / total classified downtime * 100
+
+Do not invent a root cause.
+
+For example:
+
+Correct:
+"Fillpac 4 Belt Not Running accounts for 178.81 minutes
+of classified downtime."
+
+Incorrect:
+"The belt failed because of mechanical wear."
+
+The second statement is not allowed unless the supplied
+data explicitly proves it.
+
+============================================================
+7. SHIFT CHANGEOVER
+============================================================
+
+If shift changeover data is supplied, mention it only when
+relevant.
+
+Use the supplied values.
+
+For example:
+
+"Shift C recorded 207.03 minutes of changeover delay."
+
+Do not invent the reason for the delay.
+
+============================================================
+8. QUALITY
+============================================================
+
+Use ONLY supplied quality data.
+
+Quality loss may include:
+
+- Burst Bags
+- Out of Limit Bags
+- other explicitly supplied reject reasons
+
+Rank supplied quality-loss contributors from largest to
+smallest.
+
+Do not invent quality causes.
+
+For example:
+
+Correct:
+"Out of Limit Bags account for 20 bags of recorded quality
+loss."
+
+Incorrect:
+"The bags were caused by incorrect calibration."
+
+unless calibration is explicitly supplied as the cause.
+
+============================================================
+9. WEEK-OVER-WEEK TREND
+============================================================
+
+Compare current week with previous week.
+
+For each supplied KPI state:
+
+- increased
+- decreased
+- remained unchanged
+
+Use percentage points.
+
+Example:
+
+"Performance decreased by 4.00 percentage points from
+70.00% to 66.00%."
+
+If previous-week data is unavailable, state that it was not
+supplied.
+
+============================================================
+10. MISSING DATA
+============================================================
+
+Use MISSING DATA to identify information that is genuinely
+absent and relevant.
+
+Do not claim data is missing if it is actually supplied.
+
+If no important data is missing, write:
+
+"No material data gaps identified."
+
+============================================================
+11. RECOMMENDATIONS
+============================================================
+
+Recommendations must be directly supported by supplied data.
+
+Allowed:
+
+"Prioritize investigation of the largest recorded downtime
+driver."
+
+Not allowed:
+
+"Replace the motor bearing."
+
+unless the supplied data explicitly identifies the motor
+bearing as the cause.
+
+============================================================
+12. STYLE
+============================================================
+
+Use:
+
+- simple English
+- concise sentences
+- management-friendly language
+- factual wording
+- direct statements
+
+Avoid:
+
+- dramatic language
+- speculation
+- unsupported root causes
+- unnecessary technical jargon
+- long explanations
+
+============================================================
+OUTPUT REQUIREMENT
+============================================================
+
+Return EXACTLY the following nine sections.
+
+Do not add text before the first section.
+
+Do not add text after the final section.
+
+Do not use JSON.
+
+Do not use markdown.
+
+Do not use bullet points.
+
+Do not use code fences.
+
+Required headers must be written exactly as shown:
+
+EXECUTIVE SUMMARY:
+
+MAIN LOSS DRIVER:
+
+PERFORMANCE CONCERN:
+
+STRONGEST KPI:
+
+WEEK-OVER-WEEK TREND:
+
+QUALITY SUMMARY:
+
+MAIN QUALITY ISSUE:
+
+KEY DECISION POINT:
+
+MISSING DATA:
+"""
+
+
+# ============================================================
+# REPORT INSTRUCTIONS
 # ============================================================
 
 REPORT_INSTRUCTIONS = r"""
-Using ONLY the verified data provided below, write concise
-management commentary for a weekly OEE report. Do not invent,
-estimate, or assume any number, cause, or event that is not
-explicitly present in the data.
+Generate the weekly OEE management narrative using ONLY the
+VERIFIED DATA supplied below.
 
-Respond in EXACTLY this plain-text format, with each label on its
-own line followed by a colon and 1-3 sentences. Do not use JSON,
-markdown, or bullet points. Do not repeat these instructions.
+Required output:
 
-EXECUTIVE SUMMARY: One short paragraph summarizing overall OEE
-performance, status vs. target, and the weakest/strongest KPI.
+EXECUTIVE SUMMARY:
+Summarize the current OEE, target comparison if target is
+supplied, weakest component KPI and strongest component KPI.
 
-MAIN ISSUE: The single biggest performance concern this week,
-grounded in the supplied KPI and downtime figures.
+MAIN LOSS DRIVER:
+Identify the largest supplied downtime contributor.
+Include its minutes and percentage of classified downtime
+when the denominator is available.
 
-DOWNTIME ACTION: The largest downtime contributor and a concrete,
-data-grounded action to address it.
+PERFORMANCE CONCERN:
+Explain the supplied Performance value and actual-vs-expected
+production gap. Do not invent a reason for the gap.
 
-QUALITY ACTION: The largest quality-loss contributor and a
-concrete, data-grounded action to address it.
+STRONGEST KPI:
+Identify the strongest component KPI among Availability,
+Performance and Quality. Include its supplied value.
+
+WEEK-OVER-WEEK TREND:
+Describe Availability, Performance and Quality changes
+versus the previous week using percentage points.
+
+QUALITY SUMMARY:
+Summarize the current Quality value and supplied quality-loss
+data.
+
+MAIN QUALITY ISSUE:
+Identify the largest supplied quality-loss contributor.
+Include bags and percentage of recorded quality loss when
+computable.
+
+KEY DECISION POINT:
+State the single most important priority based on the supplied
+data. Tie the priority to the weakest KPI or largest verified
+loss. Do not invent a root cause.
+
+MISSING DATA:
+List relevant information that was not supplied. If nothing
+material is missing, write:
+No material data gaps identified.
+
+Remember:
+
+analysis.json is the numerical source of truth.
+
+Do not invent facts.
+
+Do not invent causes.
+
+Do not invent maintenance findings.
+
+Do not invent events.
+
+Do not invent numbers.
+
+Return ONLY the nine required sections.
 """
+
+
+# ============================================================
+# BUILD PROMPT
+# ============================================================
+
+def build_prompt(
+    system_prompt: str,
+    user_data: str,
+) -> str:
+    """
+    Combine the system instructions and verified data.
+
+    This signature intentionally matches local_llm_client.py.
+    """
+
+    return (
+        f"{system_prompt}\n\n"
+        f"{REPORT_INSTRUCTIONS}\n\n"
+        "============================================================\n"
+        "VERIFIED DATA FROM PYTHON\n"
+        "============================================================\n\n"
+        f"{user_data}"
+    )
+
+
+# ============================================================
+# SECTION EXTRACTION
+# ============================================================
+
+REQUIRED_SECTIONS = [
+
+    "EXECUTIVE SUMMARY",
+
+    "MAIN LOSS DRIVER",
+
+    "PERFORMANCE CONCERN",
+
+    "STRONGEST KPI",
+
+    "WEEK-OVER-WEEK TREND",
+
+    "QUALITY SUMMARY",
+
+    "MAIN QUALITY ISSUE",
+
+    "KEY DECISION POINT",
+
+    "MISSING DATA",
+]
+
+
+def extract_sections(
+    model_output: str,
+) -> dict:
+    """
+    Compatibility parser for direct use of prompts.py.
+
+    local_llm_client.py contains the primary parser.
+    """
+
+    sections = {
+        section: ""
+        for section
+        in REQUIRED_SECTIONS
+    }
+
+    if not model_output:
+        return sections
+
+    text = (
+        model_output
+        .replace(
+            "\r\n",
+            "\n",
+        )
+        .replace(
+            "\r",
+            "\n",
+        )
+    )
+
+    current_section = None
+
+    lines = text.split(
+        "\n"
+    )
+
+    for line in lines:
+
+        clean = re.sub(
+            r"^\s*#{1,6}\s*",
+            "",
+            line,
+        ).strip()
+
+        matched = False
+
+        for header in REQUIRED_SECTIONS:
+
+            if re.match(
+                rf"^{re.escape(header)}\s*:?",
+                clean,
+                flags=re.IGNORECASE,
+            ):
+
+                current_section = header
+
+                content = clean[
+                    len(header):
+                ].lstrip(
+                    " :"
+                ).strip()
+
+                if content:
+
+                    sections[
+                        header
+                    ] = content
+
+                matched = True
+
+                break
+
+        if matched:
+            continue
+
+        if (
+            current_section
+            and clean
+        ):
+
+            if sections[
+                current_section
+            ]:
+
+                sections[
+                    current_section
+                ] += " " + clean
+
+            else:
+
+                sections[
+                    current_section
+                ] = clean
+
+    for key in sections:
+
+        sections[key] = (
+            " ".join(
+                sections[key].split()
+            )
+        )
+
+    return sections
+
+
+# ============================================================
+# DATA VALIDATION
+# ============================================================
+
+def validate_data_completeness(
+    data_dict: dict,
+) -> list:
+    """
+    Validate the legacy flat data format.
+
+    This helper is retained for compatibility with older code.
+    """
+
+    required_fields = [
+
+        "plant_site_name",
+
+        "equipment_line_name",
+
+        "report_week",
+
+        "current_week_oee",
+
+        "current_week_availability",
+
+        "current_week_performance",
+
+        "current_week_quality",
+
+        "previous_week_oee",
+
+        "previous_week_availability",
+
+        "previous_week_performance",
+
+        "previous_week_quality",
+
+        "target_oee",
+
+        "planned_production_time_min",
+
+        "downtime_faults",
+
+        "total_produced_bags",
+
+        "good_bags",
+
+        "rejected_bags",
+
+        "quality_loss_reasons",
+    ]
+
+    return [
+
+        field
+
+        for field
+        in required_fields
+
+        if (
+            field not in data_dict
+            or data_dict[field] is None
+        )
+    ]
+
+
+# ============================================================
+# WEEK-OVER-WEEK
+# ============================================================
+
+def format_percentage_point_change(
+    current: float,
+    previous: float,
+) -> tuple:
+    """
+    Return:
+
+        (absolute_change, direction)
+    """
+
+    change = (
+        current
+        - previous
+    )
+
+    tolerance = 0.01
+
+    if abs(change) < tolerance:
+
+        direction = (
+            "remained unchanged"
+        )
+
+    elif change > 0:
+
+        direction = (
+            "increased"
+        )
+
+    else:
+
+        direction = (
+            "decreased"
+        )
+
+    return (
+        abs(change),
+        direction,
+    )
+
+
+# ============================================================
+# DOWNTIME RANKING
+# ============================================================
+
+def rank_fault_codes(
+    downtime_faults: list,
+) -> list:
+    """
+    Rank downtime causes by minutes lost.
+    """
+
+    ranked = sorted(
+        downtime_faults,
+        key=lambda item:
+            item.get(
+                "minutes",
+                0,
+            ),
+        reverse=True,
+    )
+
+    for index, fault in enumerate(
+        ranked,
+        start=1,
+    ):
+
+        fault["rank"] = index
+
+    return ranked
+
+
+# ============================================================
+# QUALITY RANKING
+# ============================================================
+
+def rank_quality_losses(
+    quality_loss_reasons: list,
+) -> list:
+    """
+    Rank quality-loss causes by bags lost.
+    """
+
+    ranked = sorted(
+        quality_loss_reasons,
+        key=lambda item:
+            item.get(
+                "bags",
+                0,
+            ),
+        reverse=True,
+    )
+
+    for index, loss in enumerate(
+        ranked,
+        start=1,
+    ):
+
+        loss["rank"] = index
+
+    return ranked
+
+
+# ============================================================
+# TOP DOWNTIME SHARE
+# ============================================================
+
+def calculate_top_downtime_share(
+    downtime_faults: list,
+    n_drivers: int = 3,
+) -> float:
+    """
+    Calculate combined percentage of top N downtime drivers.
+    """
+
+    if not downtime_faults:
+        return 0.0
+
+    total_minutes = sum(
+        float(
+            item.get(
+                "minutes",
+                0,
+            )
+        )
+        for item
+        in downtime_faults
+    )
+
+    if total_minutes <= 0:
+        return 0.0
+
+    top_n_minutes = sum(
+        float(
+            item.get(
+                "minutes",
+                0,
+            )
+        )
+        for item
+        in downtime_faults[
+            :n_drivers
+        ]
+    )
+
+    return (
+        top_n_minutes
+        / total_minutes
+        * 100
+    )
+
+
+# ============================================================
+# TOP QUALITY LOSS SHARE
+# ============================================================
+
+def calculate_top_quality_loss_share(
+    quality_loss_reasons: list,
+    n_reasons: int = 3,
+) -> float:
+    """
+    Calculate combined percentage of top N quality-loss causes.
+    """
+
+    if not quality_loss_reasons:
+        return 0.0
+
+    total_bags = sum(
+        float(
+            item.get(
+                "bags",
+                0,
+            )
+        )
+        for item
+        in quality_loss_reasons
+    )
+
+    if total_bags <= 0:
+        return 0.0
+
+    top_n_bags = sum(
+        float(
+            item.get(
+                "bags",
+                0,
+            )
+        )
+        for item
+        in quality_loss_reasons[
+            :n_reasons
+        ]
+    )
+
+    return (
+        top_n_bags
+        / total_bags
+        * 100
+    )
+
+
+# ============================================================
+# WEAKEST KPI
+# ============================================================
+
+def identify_weakest_kpi(
+    availability: float,
+    performance: float,
+    quality: float,
+) -> str:
+    """
+    Identify the weakest component KPI.
+    """
+
+    kpis = {
+
+        "Availability":
+            availability,
+
+        "Performance":
+            performance,
+
+        "Quality":
+            quality,
+    }
+
+    minimum = min(
+        kpis.values()
+    )
+
+    weakest = [
+
+        name
+
+        for name, value
+        in kpis.items()
+
+        if abs(
+            value - minimum
+        ) < 0.01
+    ]
+
+    if len(weakest) == 1:
+
+        return weakest[0]
+
+    return " and ".join(
+        weakest
+    )
+
+
+# ============================================================
+# STRONGEST KPI
+# ============================================================
+
+def identify_strongest_kpi(
+    availability: float,
+    performance: float,
+    quality: float,
+) -> str:
+    """
+    Identify the strongest component KPI.
+    """
+
+    kpis = {
+
+        "Availability":
+            availability,
+
+        "Performance":
+            performance,
+
+        "Quality":
+            quality,
+    }
+
+    maximum = max(
+        kpis.values()
+    )
+
+    strongest = [
+
+        name
+
+        for name, value
+        in kpis.items()
+
+        if abs(
+            value - maximum
+        ) < 0.01
+    ]
+
+    if len(strongest) == 1:
+
+        return strongest[0]
+
+    return " and ".join(
+        strongest
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    print(
+        "OEE Weekly Management Report "
+        "prompt module"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    print(
+        "Required AI sections:"
+    )
+
+    for section in REQUIRED_SECTIONS:
+
+        print(
+            f"  - {section}"
+        )

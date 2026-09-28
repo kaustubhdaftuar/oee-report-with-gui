@@ -369,7 +369,7 @@ class QueueManager:
                         site_id=job.site_id,
                         week=job.week,
                         config_manager=self.config_manager,
-                        status_callback=status_callback
+                        progress_callback=status_callback
                     )
                     
                     # Mark job as complete
